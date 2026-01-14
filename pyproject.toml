@@ -25,6 +25,10 @@ dependencies = [
     "wandb-osh>=1.2.2",
     "cloudpickle>=3.1.1",
     "ase-db-backends",
+    "seml>=0.5.3",
+    "rich<14.0.0", # temporary pin for seml issue
+    "pre-commit>=4.3.0",
+    "ruff>=0.14.11",
 ]
 
 [project.urls]

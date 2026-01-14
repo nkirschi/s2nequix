@@ -1,0 +1,22 @@
+seml:
+  executable: seml_main.py
+  output_dir: ./output_log/slurm/nequix
+  project_root_dir: ./
+
+slurm:
+  - experiments_per_job: 1
+    sbatch_options:
+      gres: gpu:1 # num GPUs
+      mem: 64G # memory
+      cpus-per-task: 16 # num cores
+      time: 5-00:00 # max time, D-HH:MM
+      partition: gpu_a100
+      qos: default # default # interactive
+
+grid:
+  seed:
+    type: choice
+    options:
+      - 1
+      #- 2
+      #- 3
