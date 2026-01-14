@@ -149,6 +149,8 @@ class IndexDataset(Dataset):
     def __init__(self, base: Dataset, indices: np.ndarray):
         super().__init__(backend=base.backend)
         self.base, self.indices = base, np.asarray(indices, dtype=int)
+        if hasattr(self.base, "atomic_indices"):
+            self.atomic_indices = self.base.atomic_indices
 
     def __len__(self):
         return self.indices.size

@@ -10,14 +10,19 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jraph
+import numpy as onp
 import optax
 import yaml
 from wandb_osh.hooks import TriggerWandbSyncHook
+
+from tqdm import tqdm
+    
 
 import wandb
 from nequix.data import (
     DataLoader,
     AseDBDataset,
+    IndexDataset,
     ParallelLoader,
     average_atom_energies,
     dataset_stats,
@@ -172,6 +177,19 @@ def train(config_path: str):
         cutoff=config["cutoff"],
         backend="jax",
     )
+
+    if "molsize_range" in config:
+        if not os.path.exists('./molsizes.npy'):
+            molsizes = []
+            for i in tqdm(range(len(train_dataset))):
+                molsizes.append(int(train_dataset[i].n_node))
+            onp.save('molsizes.npy', onp.array(molsizes, dtype=onp.int16))
+        else:
+            molsizes = onp.load('./molsizes.npy').squeeze()
+        min_n, max_n = config["molsize_range"]
+        range_idx = onp.argwhere((min_n <= molsizes) & (molsizes <= max_n)).squeeze()
+        train_dataset = IndexDataset(train_dataset, range_idx)
+
     if "valid_frac" in config:
         train_dataset, val_dataset = train_dataset.split(valid_frac=config["valid_frac"])
     else:
@@ -182,6 +200,8 @@ def train(config_path: str):
             cutoff=config["cutoff"],
             backend="jax",
         )
+
+    print(f'dataset sizes (train/val): {len(train_dataset)}/{len(val_dataset)}')
 
     if "atom_energies" in config:
         atom_energies = [config["atom_energies"][n] for n in config["atomic_numbers"]]
