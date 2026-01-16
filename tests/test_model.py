@@ -151,7 +151,10 @@ def test_model_save_load():
         assert model.radial_polynomial_p == loaded_model.radial_polynomial_p
         assert model.shift == loaded_model.shift
         assert model.scale == loaded_model.scale
-        assert model.layers[0].avg_n_neighbors == loaded_model.layers[0].avg_n_neighbors
+        assert (
+            model.spatial_layers[0].avg_n_neighbors
+            == loaded_model.spatial_layers[0].avg_n_neighbors
+        )
         np.testing.assert_allclose(model.atom_energies, loaded_model.atom_energies)
         loaded_energy, loaded_forces, loaded_stress = loaded_model(batch_padded)
         np.testing.assert_allclose(original_energy, loaded_energy)

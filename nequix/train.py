@@ -163,6 +163,22 @@ def load_training_state(path):
     )
 
 
+def print_summary(model):
+    print("--- Model Structure ---")
+    eqx.tree_pprint(model)
+
+    # Filter for arrays (weights/biases) and ignore static configuration
+    params = [x for x in jax.tree_util.tree_leaves(model) if eqx.is_array(x)]
+    count = sum(x.size for x in params)
+
+    # Calculate size in MB (assuming float32 = 4 bytes)
+    size_mb = count * 4 / (1024 * 1024)
+
+    print("\n--- Model Stats ---")
+    print(f"Total Parameters: {count:,}")
+    print(f"Model Size:       {size_mb:.2f} MB")
+
+
 def train(config_path: str):
     """Train a Nequix model from a config file. See configs/nequix-mp-1.yaml for an example."""
     with open(config_path, "r") as f:
@@ -176,16 +192,23 @@ def train(config_path: str):
         atomic_numbers=config["atomic_numbers"],
         cutoff=config["cutoff"],
         backend="jax",
+        load_spectral=(config["spectral_layer_type"] is not None)
+        if "spectral_layer_type" in config
+        else False,
+        laplacian_cutoff_interval=tuple(config["laplacian_cutoff_interval"])
+        if "laplacian_cutoff_interval" in config
+        else None,
+        num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
     )
 
     if "molsize_range" in config:
-        if not os.path.exists('./molsizes.npy'):
+        if not os.path.exists("./molsizes.npy"):
             molsizes = []
             for i in tqdm(range(len(train_dataset))):
                 molsizes.append(int(train_dataset[i].n_node))
-            onp.save('molsizes.npy', onp.array(molsizes, dtype=onp.int16))
+            onp.save("molsizes.npy", onp.array(molsizes, dtype=onp.int16))
         else:
-            molsizes = onp.load('./molsizes.npy').squeeze()
+            molsizes = onp.load("./molsizes.npy").squeeze()
         min_n, max_n = config["molsize_range"]
         range_idx = onp.argwhere((min_n <= molsizes) & (molsizes <= max_n)).squeeze()
         train_dataset = IndexDataset(train_dataset, range_idx)
@@ -201,7 +224,7 @@ def train(config_path: str):
             backend="jax",
         )
 
-    print(f'dataset sizes (train/val): {len(train_dataset)}/{len(val_dataset)}')
+    print(f"dataset sizes (train/val): {len(train_dataset)}/{len(val_dataset)}")
 
     if "atom_energies" in config:
         atom_energies = [config["atom_energies"][n] for n in config["atomic_numbers"]]
@@ -249,7 +272,7 @@ def train(config_path: str):
         TriggerWandbSyncHook() if os.environ.get("WANDB_MODE") == "offline" else lambda: None
     )
 
-    key = jax.random.key(0)
+    key = jax.random.key(config["seed"] if "seed" in config else 0)
     model = Nequix(
         key,
         n_species=len(config["atomic_numbers"]),
@@ -268,7 +291,11 @@ def train(config_path: str):
         scale=stats["scale"],
         avg_n_neighbors=stats["avg_n_neighbors"],
         atom_energies=atom_energies,
+        spectral_layer_type=config["spectral_layer_type"]
+        if "spectral_layer_type" in config
+        else None,
     )
+    print_summary(model)
 
     # NB: this is not exact because of dynamic batching but should be close enough
     steps_per_epoch = len(train_dataset) // (config["batch_size"] * jax.device_count())

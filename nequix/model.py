@@ -1,3 +1,4 @@
+import functools
 import json
 import math
 from typing import Callable, Optional, Sequence
@@ -205,6 +206,99 @@ class NequixConvolution(eqx.Module):
         )
 
 
+class EquivariantSpectralLayer(eqx.Module):
+    input_irreps: e3nn.Irreps = eqx.field(static=True)
+    output_irreps: e3nn.Irreps = eqx.field(static=True)
+    gate: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
+    spectral_layer_type: str = eqx.field(static=True)
+
+    e3nn_linear1: e3nn.equinox.Linear
+    e3nn_linear2: e3nn.equinox.Linear
+    filter_linear1: eqx.nn.Linear
+    filter_linear2: eqx.nn.Linear
+
+    def __init__(
+        self,
+        key: jax.Array,
+        input_irreps: e3nn.Irreps,
+        output_irreps: e3nn.Irreps,
+        spectral_layer_type: str,
+        even_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
+        odd_activation: Callable[[jax.Array], jax.Array] = jax.nn.tanh,
+        gate_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
+    ):
+        self.input_irreps = input_irreps
+        self.output_irreps = output_irreps
+        self.spectral_layer_type = spectral_layer_type
+
+        # gate needs one extra scalar for each non-scalar
+        num_nonscalar = input_irreps.filter(drop="0e + 0o").num_irreps  # type: ignore
+        gate_irreps = input_irreps + e3nn.Irreps(f"{num_nonscalar}x0e").simplify()
+
+        k1, k2, k3, k4 = jax.random.split(key, 4)
+
+        self.e3nn_linear1 = e3nn.equinox.Linear(
+            irreps_in=input_irreps, irreps_out=gate_irreps, key=k1
+        )
+        self.e3nn_linear2 = e3nn.equinox.Linear(
+            irreps_in=input_irreps, irreps_out=output_irreps, key=k2
+        )
+        self.gate = functools.partial(
+            e3nn.gate,  # gate reduces gate_irreps back to input_irreps
+            even_act=even_activation,
+            odd_act=odd_activation,
+            even_gate_act=gate_activation,
+        )
+        self.filter_linear1 = eqx.nn.Linear(1, output_irreps.num_irreps, key=k3)
+        self.filter_linear2 = jax.tree_map(
+            jnp.zeros_like,
+            eqx.nn.Linear(output_irreps.num_irreps, output_irreps.num_irreps, key=k4),
+        )
+
+    def __call__(
+        self,
+        node_feats: e3nn.IrrepsArray,
+        eigvals: jax.Array,
+        eigvecs: jax.Array,
+        batch_index: jax.Array,
+    ) -> e3nn.IrrepsArray:
+        # TODO: implement 2nd option with scalar readout
+        # compute transformed node features
+        transformed = self.e3nn_linear1(node_feats)
+        transformed = self.gate(transformed)
+        transformed = self.e3nn_linear2(transformed)
+
+        # compute spectral filter factors
+        filter = jax.vmap(jax.vmap(self.filter_linear1))(eigvals[..., None])
+        filter = jax.nn.silu(filter)
+        filter = jax.vmap(jax.vmap(self.filter_linear2))(filter)
+
+        # We perform the multiplication U_{ik} * h_{ic}.
+        # To avoid N*K*C tensor, we can iterate or vectorize carefully.
+        # Since K is usually small (e.g. 16-128), broadcasting is generally fine.
+        projections = eigvecs[:, :, None] * transformed.array[:, None, :]  # (N, k, d)
+
+        # Sum over nodes belonging to the same graph
+        spectral_coeffs = jax.ops.segment_sum(
+            projections, batch_index, num_segments=eigvals.shape[0]
+        )  # (B, k, d)
+
+        # apply filter in an equivariant way via irrep-wise broadcasting
+        spectral_coeffs = e3nn.IrrepsArray(self.output_irreps, spectral_coeffs)
+        filter = e3nn.IrrepsArray(f"{self.output_irreps.num_irreps}x0e", filter)
+        filtered_coeffs = (filter * spectral_coeffs).array  # (B, k, d)
+
+        # Lift filtered coefficients back to node size using batch_index
+        gathered_coeffs = filtered_coeffs[batch_index]  # (N, k, d)
+
+        # Project back using eigenvectors
+        # Sum_{k} (U[i, k] * gathered_coeffs[i, k, c])
+        # eigenvectors: (N_total, K) -> (N_total, K, 1)
+        reconstructed = jnp.sum(eigvecs[:, :, None] * gathered_coeffs, axis=1)  # (N, d)
+
+        return e3nn.IrrepsArray(self.output_irreps, reconstructed)
+
+
 class Nequix(eqx.Module):
     lmax: int = eqx.field(static=True)
     n_species: int = eqx.field(static=True)
@@ -213,9 +307,11 @@ class Nequix(eqx.Module):
     cutoff: float = eqx.field(static=True)
     shift: float = eqx.field(static=True)
     scale: float = eqx.field(static=True)
+    spectral_layer_type: Optional[str] = eqx.field(static=True)
 
     atom_energies: jax.Array
-    layers: list[NequixConvolution]
+    spatial_layers: list[NequixConvolution]
+    spectral_layers: Optional[list[EquivariantSpectralLayer]]
     readout: e3nn.equinox.Linear
 
     def __init__(
@@ -237,6 +333,7 @@ class Nequix(eqx.Module):
         avg_n_neighbors: float = 1.0,
         atom_energies: Optional[Sequence[float]] = None,
         layer_norm: bool = False,
+        spectral_layer_type: Optional[str] = None,
     ):
         self.lmax = lmax
         self.cutoff = cutoff
@@ -245,6 +342,7 @@ class Nequix(eqx.Module):
         self.radial_polynomial_p = radial_polynomial_p
         self.shift = shift
         self.scale = scale
+        self.spectral_layer_type = spectral_layer_type
         self.atom_energies = (
             jnp.array(atom_energies)
             if atom_energies is not None
@@ -253,13 +351,31 @@ class Nequix(eqx.Module):
         input_irreps = e3nn.Irreps(f"{n_species}x0e")
         sh_irreps = e3nn.s2_irreps(lmax)
         hidden_irreps = e3nn.Irreps(hidden_irreps)
-        self.layers = []
+        self.spatial_layers = []
+        self.spectral_layers = []
 
         key, *subkeys = jax.random.split(key, n_layers + 1)
         for i in range(n_layers):
-            self.layers.append(
+            subkey = subkeys[i]
+
+            if self.spectral_layer_type is not None:
+                subkey, subkey2 = jax.random.split(subkey, 2)
+                self.spectral_layers.append(
+                    EquivariantSpectralLayer(
+                        input_irreps=hidden_irreps
+                        if i < n_layers - 1
+                        else hidden_irreps.filter("0e"),
+                        output_irreps=hidden_irreps
+                        if i < n_layers - 1
+                        else hidden_irreps.filter("0e"),
+                        spectral_layer_type=self.spectral_layer_type,
+                        key=subkey2,
+                    )
+                )
+
+            self.spatial_layers.append(
                 NequixConvolution(
-                    key=subkeys[i],
+                    key=subkey,
                     input_irreps=input_irreps if i == 0 else hidden_irreps,
                     output_irreps=hidden_irreps if i < n_layers - 1 else hidden_irreps.filter("0e"),
                     sh_irreps=sh_irreps,
@@ -284,6 +400,9 @@ class Nequix(eqx.Module):
         species: jax.Array,
         senders: jax.Array,
         receivers: jax.Array,
+        eigvals: Optional[jax.Array],
+        eigvecs: Optional[jax.Array],
+        batch_index: jax.Array,
     ):
         # input features are one-hot encoded species
         features = e3nn.IrrepsArray(
@@ -311,8 +430,8 @@ class Nequix(eqx.Module):
             normalization="component",
         )
 
-        for layer in self.layers:
-            features = layer(
+        for i in range(len(self.spatial_layers)):
+            features = self.spatial_layers[i](
                 features,
                 species,
                 sh,
@@ -320,6 +439,13 @@ class Nequix(eqx.Module):
                 senders,
                 receivers,
             )
+            if self.spectral_layer_type is not None:
+                features += self.spectral_layers[i](
+                    features,
+                    eigvals,
+                    eigvecs,
+                    batch_index,
+                )
 
         node_energies = self.readout(features)
 
@@ -334,12 +460,23 @@ class Nequix(eqx.Module):
         return node_energies.array
 
     def __call__(self, data: jraph.GraphsTuple):
+        graph_ids = jnp.arange(data.n_node.shape[0])
+        batch_index = jnp.repeat(
+            graph_ids, data.n_node, total_repeat_length=data.nodes["species"].shape[0]
+        )
+
         if data.globals["cell"] is None:
             # compute forces and stress as gradient of total energy w.r.t positions
             def total_energy_fn(positions: jax.Array):
                 r = positions[data.senders] - positions[data.receivers]
                 node_energies = self.node_energies(
-                    r, data.nodes["species"], data.senders, data.receivers
+                    r,
+                    data.nodes["species"],
+                    data.senders,
+                    data.receivers,
+                    data.globals["eigvals"],
+                    data.nodes["eigvecs"],
+                    batch_index,
                 )
                 return jnp.sum(node_energies), node_energies
 
@@ -371,7 +508,13 @@ class Nequix(eqx.Module):
                 offsets = jnp.einsum("ij,ijk->ik", data.edges["shifts"], cell_per_edge)
                 r = positions[data.senders] - positions[data.receivers] + offsets
                 node_energies = self.node_energies(
-                    r, data.nodes["species"], data.senders, data.receivers
+                    r,
+                    data.nodes["species"],
+                    data.senders,
+                    data.receivers,
+                    data.globals["eigvals"],
+                    data.nodes["eigvecs"],
+                    batch_index,
                 )
                 return jnp.sum(node_energies), node_energies
 

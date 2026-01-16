@@ -8,9 +8,9 @@ slurm:
     sbatch_options:
       gres: gpu:1 # num GPUs
       mem: 64G # memory
-      cpus-per-task: 16 # num cores
+      cpus-per-task: 8 # num cores
       time: 5-00:00 # max time, D-HH:MM
-      partition: gpu_a100
+      partition: gpu_l40s
       qos: default # default # interactive
 
 grid:

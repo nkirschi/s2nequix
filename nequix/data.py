@@ -4,6 +4,7 @@ import queue
 import bisect
 import threading
 from pathlib import Path
+from zipfile import BadZipFile
 
 import ase
 import ase.db
@@ -104,6 +105,7 @@ def dict_to_graphstuple(graph_dict: dict):
             "species": graph_dict["species"],
             "positions": graph_dict["positions"],
             "forces": graph_dict["forces"] if "forces" in graph_dict else None,
+            "eigvecs": graph_dict["eigvecs"] if "eigvecs" in graph_dict else None,
         },
         edges={"shifts": graph_dict["shifts"]},
         senders=graph_dict["senders"],
@@ -112,6 +114,7 @@ def dict_to_graphstuple(graph_dict: dict):
             "cell": graph_dict["cell"][None, ...] if graph_dict["cell"] is not None else None,
             "energy": graph_dict["energy"] if "energy" in graph_dict else None,
             "stress": graph_dict["stress"][None, ...] if "stress" in graph_dict else None,
+            "eigvals": graph_dict["eigvals"][None, ...] if "eigvals" in graph_dict else None,
         },
     )
 
@@ -119,6 +122,25 @@ def dict_to_graphstuple(graph_dict: dict):
 def atomic_numbers_to_indices(atomic_numbers: list[int]) -> dict[int, int]:
     """Convert list of atomic numbers to dictionary of atomic number to index."""
     return {n: i for i, n in enumerate(sorted(atomic_numbers))}
+
+
+def cosine_cutoff(x, decay_start, cutoff):
+    cos = 0.5 * (1 + np.cos(np.pi * (x - decay_start) / (cutoff - decay_start)))
+    out = np.where(x >= cutoff, 0, cos)
+    out = np.where(x <= decay_start, 1, out)
+    return out
+
+
+def compute_laplacian_eigdecomp(positions, inner_cutoff, outer_cutoff):
+    positions = positions.astype(np.float64)
+    dist_matrix = np.linalg.norm(positions[:, None] - positions[None, :], axis=-1)
+    adj_matrix = cosine_cutoff(dist_matrix, inner_cutoff, outer_cutoff)
+    inv_deg_matrix = np.diag(1 / np.sqrt(adj_matrix.sum(axis=0)))
+    laplacian = np.eye(len(positions)) - inv_deg_matrix @ adj_matrix @ inv_deg_matrix
+    sym_laplacian = (laplacian + laplacian.T.conj()) / 2
+    assert sym_laplacian.dtype == np.float64
+    eigvals, eigvecs = np.linalg.eigh(sym_laplacian)
+    return eigvals, eigvecs
 
 
 class Dataset(ABC):
@@ -179,8 +201,18 @@ class ConcatDataset(Dataset):
 # based on https://github.com/facebookresearch/fairchem/blob/ccc1416/src/fairchem/core/datasets/ase_datasets.py#L382
 class AseDBDataset(Dataset):
     def __init__(
-        self, file_path: str, atomic_numbers: list[int], cutoff: float = 5.0, backend: str = "jax"
+        self,
+        file_path: str,
+        atomic_numbers: list[int],
+        cutoff: float = 5.0,
+        backend: str = "jax",
+        load_spectral: bool = False,
+        laplacian_cutoff_interval: tuple[float] = (2.0, 10.0),  # unit: Ångström
+        num_eigenvectors: int = 16,  # size of partial EVD
     ):
+        if backend == "torch" and load_spectral:
+            raise NotImplementedError("spectral batching is not supported for torch backend")
+
         super().__init__(backend=backend)
         self.atomic_indices = atomic_numbers_to_indices(atomic_numbers)
         self.file_path = Path(file_path)
@@ -192,6 +224,9 @@ class AseDBDataset(Dataset):
             self.dbs = [ase.db.connect(file_path, readonly=True, use_lock_file=False)]
         self.db_ids = [db.ids for db in self.dbs]
         self.id_cumulative = np.cumsum([len(ids) for ids in self.db_ids])
+        self.load_spectral = load_spectral
+        self.laplacian_cutoff_interval = laplacian_cutoff_interval
+        self.num_eigenvectors = num_eigenvectors
 
     def __len__(self):
         return self.id_cumulative[-1]
@@ -202,6 +237,30 @@ class AseDBDataset(Dataset):
             idx = idx - self.id_cumulative[db_idx - 1]
         atoms = self.dbs[db_idx]._get_row(self.db_ids[db_idx][idx]).toatoms()
         graph = preprocess_graph(atoms, self.atomic_indices, self.cutoff, True)
+
+        if self.load_spectral:
+            a, b = self.laplacian_cutoff_interval
+            spectral_path = self.file_path / "spectral" / f"cutoff_{a:.1f}-{b:.1f}" / f"{idx}.npz"
+            try:
+                data = dict(np.load(spectral_path))
+            except (OSError, BadZipFile, EOFError):
+                if spectral_path.exists():
+                    spectral_path.unlink()
+                spectral_path.parent.mkdir(parents=True, exist_ok=True)
+                positions = graph["positions"]
+                eigvals, eigvecs = compute_laplacian_eigdecomp(positions, a, b)
+                data = {"eigvals": eigvals, "eigvecs": eigvecs}
+                np.savez_compressed(spectral_path, **data)
+
+            # partial EVD
+            if len(data["eigvals"]) < self.num_eigenvectors:
+                raise NotImplementedError("need to implement EVD padding for small molecules")
+            else:
+                data["eigvecs"] = data["eigvecs"][:, : self.num_eigenvectors]
+                data["eigvals"] = data["eigvals"][: self.num_eigenvectors]
+
+            graph |= data
+
         return graph
 
 
