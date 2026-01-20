@@ -189,3 +189,4 @@ cython_debug/
 
 output_log/*
 jax_cache/*
+settings.json

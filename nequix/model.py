@@ -226,6 +226,7 @@ class EquivariantSpectralLayer(eqx.Module):
         even_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
         odd_activation: Callable[[jax.Array], jax.Array] = jax.nn.tanh,
         gate_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
+        init_last_layer_to_zero: bool = True,
     ):
         self.input_irreps = input_irreps
         self.output_irreps = output_irreps
@@ -250,10 +251,14 @@ class EquivariantSpectralLayer(eqx.Module):
             even_gate_act=gate_activation,
         )
         self.filter_linear1 = eqx.nn.Linear(1, output_irreps.num_irreps, key=k3)
-        self.filter_linear2 = jax.tree_map(
-            jnp.zeros_like,
-            eqx.nn.Linear(output_irreps.num_irreps, output_irreps.num_irreps, key=k4),
+        self.filter_linear2 = eqx.nn.Linear(
+            output_irreps.num_irreps, output_irreps.num_irreps, key=k4
         )
+        if init_last_layer_to_zero:
+            self.filter_linear2 = jax.tree_map(
+                jnp.zeros_like,
+                self.filter_linear2,
+            )
 
     def __call__(
         self,
