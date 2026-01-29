@@ -285,7 +285,7 @@ class EquivariantSpectralLayer(eqx.Module):
 
         # Sum over nodes belonging to the same graph
         spectral_coeffs = jax.ops.segment_sum(
-            projections, batch_index, num_segments=eigvals.shape[0]
+            projections, batch_index, num_segments=eigvals.shape[0], indices_are_sorted=True
         )  # (B, k, d)
 
         # apply filter in an equivariant way via irrep-wise broadcasting
@@ -465,10 +465,7 @@ class Nequix(eqx.Module):
         return node_energies.array
 
     def __call__(self, data: jraph.GraphsTuple):
-        graph_ids = jnp.arange(data.n_node.shape[0])
-        batch_index = jnp.repeat(
-            graph_ids, data.n_node, total_repeat_length=data.nodes["species"].shape[0]
-        )
+        batch_index = node_graph_idx(data)
 
         if data.globals["cell"] is None:
             # compute forces and stress as gradient of total energy w.r.t positions
@@ -535,7 +532,7 @@ class Nequix(eqx.Module):
         # compute total energies across each subgraph
         graph_energies = jraph.segment_sum(
             node_energies,
-            node_graph_idx(data),
+            batch_index,
             num_segments=data.n_node.shape[0],
             indices_are_sorted=True,
         )
