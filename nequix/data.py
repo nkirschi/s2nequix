@@ -240,7 +240,9 @@ class AseDBDataset(Dataset):
 
         if self.load_spectral:
             a, b = self.laplacian_cutoff_interval
-            spectral_path = self.file_path / "spectral" / f"cutoff_{a:.1f}-{b:.1f}" / f"{idx}.npz"
+            spectral_path = (
+                self.file_path / "spectral" / f"cutoff_{a:.1f}-{b:.1f}" / f"{db_idx}_{idx}.npz"
+            )
             try:
                 data = dict(np.load(spectral_path))
             except (OSError, BadZipFile, EOFError):
