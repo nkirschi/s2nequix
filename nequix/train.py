@@ -187,6 +187,25 @@ def train(config_path: str):
     # use TMPDIR for slurm jobs if available
     config["cache_dir"] = config.get("cache_dir") or os.environ.get("TMPDIR")
 
+    wandb_init_kwargs = {"project": "nequix", "config": config}
+    using_checkpoint = "resume_from" in config and Path(config["resume_from"]).exists()
+    if using_checkpoint:
+        (
+            model,
+            ema_model,
+            optim,
+            opt_state,
+            step,
+            start_epoch,
+            best_val_loss,
+            wandb_run_id,
+        ) = load_training_state(config["resume_from"])
+        wandb_init_kwargs.update({"id": wandb_run_id, "resume": "allow"})
+
+    wandb.init(**wandb_init_kwargs)
+    if hasattr(wandb, "run") and wandb.run is not None:
+        wandb_run_id = getattr(wandb.run, "id", None)
+
     train_dataset = AseDBDataset(
         file_path=config["train_path"],
         atomic_numbers=config["atomic_numbers"],
@@ -268,33 +287,30 @@ def train(config_path: str):
         num_workers=16,
     )
 
-    wandb_sync = (
-        TriggerWandbSyncHook() if os.environ.get("WANDB_MODE") == "offline" else lambda: None
-    )
-
-    key = jax.random.key(config["seed"] if "seed" in config else 0)
-    model = Nequix(
-        key,
-        n_species=len(config["atomic_numbers"]),
-        hidden_irreps=config["hidden_irreps"],
-        lmax=config["lmax"],
-        cutoff=config["cutoff"],
-        n_layers=config["n_layers"],
-        radial_basis_size=config["radial_basis_size"],
-        radial_mlp_size=config["radial_mlp_size"],
-        radial_mlp_layers=config["radial_mlp_layers"],
-        radial_polynomial_p=config["radial_polynomial_p"],
-        mlp_init_scale=config["mlp_init_scale"],
-        index_weights=config["index_weights"],
-        layer_norm=config["layer_norm"],
-        shift=stats["shift"],
-        scale=stats["scale"],
-        avg_n_neighbors=stats["avg_n_neighbors"],
-        atom_energies=atom_energies,
-        spectral_layer_type=config["spectral_layer_type"]
-        if "spectral_layer_type" in config
-        else None,
-    )
+    if not using_checkpoint:
+        key = jax.random.key(config["seed"] if "seed" in config else 0)
+        model = Nequix(
+            key,
+            n_species=len(config["atomic_numbers"]),
+            hidden_irreps=config["hidden_irreps"],
+            lmax=config["lmax"],
+            cutoff=config["cutoff"],
+            n_layers=config["n_layers"],
+            radial_basis_size=config["radial_basis_size"],
+            radial_mlp_size=config["radial_mlp_size"],
+            radial_mlp_layers=config["radial_mlp_layers"],
+            radial_polynomial_p=config["radial_polynomial_p"],
+            mlp_init_scale=config["mlp_init_scale"],
+            index_weights=config["index_weights"],
+            layer_norm=config["layer_norm"],
+            shift=stats["shift"],
+            scale=stats["scale"],
+            avg_n_neighbors=stats["avg_n_neighbors"],
+            atom_energies=atom_energies,
+            spectral_layer_type=config["spectral_layer_type"]
+            if "spectral_layer_type" in config
+            else None,
+        )
     print_summary(model)
 
     # NB: this is not exact because of dynamic batching but should be close enough
@@ -307,59 +323,42 @@ def train(config_path: str):
         decay_steps=config["n_epochs"] * steps_per_epoch,
     )
 
-    if config["optimizer"] == "adamw":
-        optim = optax.chain(
-            optax.clip_by_global_norm(config["grad_clip_norm"]),
-            optax.adamw(
-                learning_rate=schedule,
-                weight_decay=config["weight_decay"],
-                mask=weight_decay_mask(model),
-            ),
-        )
-    elif config["optimizer"] == "muon":
-        optim = optax.chain(
-            optax.clip_by_global_norm(config["grad_clip_norm"]),
-            optax.contrib.muon(
-                learning_rate=schedule,
-                weight_decay=config["weight_decay"] if config["weight_decay"] != 0.0 else None,
-                weight_decay_mask=weight_decay_mask(model),
-            ),
-        )
-    else:
-        raise ValueError(f"optimizer {config['optimizer']} not supported")
+    if not using_checkpoint:
+        if config["optimizer"] == "adamw":
+            optim = optax.chain(
+                optax.clip_by_global_norm(config["grad_clip_norm"]),
+                optax.adamw(
+                    learning_rate=schedule,
+                    weight_decay=config["weight_decay"],
+                    mask=weight_decay_mask(model),
+                ),
+            )
+        elif config["optimizer"] == "muon":
+            optim = optax.chain(
+                optax.clip_by_global_norm(config["grad_clip_norm"]),
+                optax.contrib.muon(
+                    learning_rate=schedule,
+                    weight_decay=config["weight_decay"] if config["weight_decay"] != 0.0 else None,
+                    weight_decay_mask=weight_decay_mask(model),
+                ),
+            )
+        else:
+            raise ValueError(f"optimizer {config['optimizer']} not supported")
 
-    opt_state = optim.init(eqx.filter(model, eqx.is_array))
+        opt_state = optim.init(eqx.filter(model, eqx.is_array))
 
-    model = jax.device_put_replicated(model, list(jax.devices()))
-    opt_state = jax.device_put_replicated(opt_state, list(jax.devices()))
-    ema_model = jax.tree.map(lambda x: x.copy(), model)  # copy model
-    step = jnp.array(0)
-    start_epoch = 0
-    best_val_loss = float("inf")
-    wandb_run_id = None
-
-    if "resume_from" in config and Path(config["resume_from"]).exists():
-        (
-            model,
-            ema_model,
-            optim,
-            opt_state,
-            step,
-            start_epoch,
-            best_val_loss,
-            wandb_run_id,
-        ) = load_training_state(config["resume_from"])
-
-    wandb_init_kwargs = {"project": "nequix", "config": config}
-    if wandb_run_id:
-        wandb_init_kwargs.update({"id": wandb_run_id, "resume": "allow"})
-    wandb.init(**wandb_init_kwargs)
-    if hasattr(wandb, "run") and wandb.run is not None:
-        wandb_run_id = getattr(wandb.run, "id", None)
+        model = jax.device_put_replicated(model, list(jax.devices()))
+        opt_state = jax.device_put_replicated(opt_state, list(jax.devices()))
+        ema_model = jax.tree.map(lambda x: x.copy(), model)  # copy model
+        step = jnp.array(0)
+        start_epoch = 0
+        best_val_loss = float("inf")
 
     param_count = sum(p.size for p in jax.tree.flatten(eqx.filter(model, eqx.is_array))[0])
     wandb.run.summary["param_count"] = param_count
-
+    wandb_sync = (
+        TriggerWandbSyncHook() if os.environ.get("WANDB_MODE") == "offline" else lambda: None
+    )
 
     # @eqx.filter_jit
     @functools.partial(eqx.filter_pmap, in_axes=(0, 0, None, 0, 0), axis_name="device")
