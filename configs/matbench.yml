@@ -1,11 +1,14 @@
-state_path: "state.pkl" # for saving/resuming training
+state_path: "checkpoints/matbench.pkl" # for saving/resuming training
+# resume_from: "checkpoints/matbench.pkl"
+# finetune_from: "models/matbench.nqx"
+
 cutoff: 6.0
 seed: 0
 
 # dataset specific
-train_path: "data/mptrj-aselmdb"
+train_path: "/ceph/hdd/students/kirsc/data/matbench"
 valid_frac: 0.2
-molsize_range: [100, 444]
+molsize_range: [100, 100]
 laplacian_cutoff_interval: [2.0, 10.0]
 num_eigenvectors: 16
 
@@ -28,7 +31,7 @@ mlp_init_scale: 4.0
 index_weights: false
 layer_norm: true
 kernel: true
-spectral_layer_type: 'block-constant'  # one of null, 'block-constant', 'scalar readout'
+spectral_layer_type: null  # one of null, 'block-constant', 'scalar readout'
 
 # training specific
 optimizer: "muon"
