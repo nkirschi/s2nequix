@@ -15,9 +15,6 @@ import optax
 import yaml
 from wandb_osh.hooks import TriggerWandbSyncHook
 
-from tqdm import tqdm
-    
-
 import wandb
 from nequix.data import (
     DataLoader,
@@ -96,11 +93,14 @@ def loss(model, batch, energy_weight, force_weight, stress_weight, loss_type="hu
     )
 
     # MAE stress
-    stress_mae_per_atom = jnp.sum(
-        jnp.abs(stress - batch.globals["stress"])
-        / jnp.where(batch.n_node > 0, batch.n_node, 1.0)[:, None, None]
-        * graph_mask[:, None, None]
-    ) / (9 * jnp.sum(graph_mask))
+    if stress_weight > 0:
+        stress_mae_per_atom = jnp.sum(
+            jnp.abs(stress - batch.globals["stress"])
+            / jnp.where(batch.n_node > 0, batch.n_node, 1.0)[:, None, None]
+            * graph_mask[:, None, None]
+        ) / (9 * jnp.sum(graph_mask))
+    else:
+        stress_mae_per_atom = 0.0 * energy_mae_per_atom
 
     return total_loss, {
         "energy_mae_per_atom": energy_mae_per_atom,
@@ -206,6 +206,7 @@ def train(config_path: str):
     if hasattr(wandb, "run") and wandb.run is not None:
         wandb_run_id = getattr(wandb.run, "id", None)
 
+    print(f"loading training dataset from {config['train_path']}...")
     train_dataset = AseDBDataset(
         file_path=config["train_path"],
         atomic_numbers=config["atomic_numbers"],
@@ -220,22 +221,12 @@ def train(config_path: str):
         num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
     )
 
-    if "molsize_range" in config:
-        if not os.path.exists("./molsizes.npy"):
-            molsizes = []
-            for i in tqdm(range(len(train_dataset))):
-                molsizes.append(int(train_dataset[i].n_node))
-            onp.save("molsizes.npy", onp.array(molsizes, dtype=onp.int16))
-        else:
-            molsizes = onp.load("./molsizes.npy").squeeze()
-        min_n, max_n = config["molsize_range"]
-        range_idx = onp.argwhere((min_n <= molsizes) & (molsizes <= max_n)).squeeze()
-        train_dataset = IndexDataset(train_dataset, range_idx)
-
     if "valid_frac" in config:
+        print(f"splitting training dataset with valid_frac={config['valid_frac']} ...")
         train_dataset, val_dataset = train_dataset.split(valid_frac=config["valid_frac"])
     else:
         assert "valid_path" in config, "valid_path must be specified if valid_frac is not provided"
+        print(f"loading validation dataset from {config['valid_path']}...")
         val_dataset = AseDBDataset(
             file_path=config["valid_path"],
             atomic_numbers=config["atomic_numbers"],
@@ -243,26 +234,45 @@ def train(config_path: str):
             backend="jax",
         )
 
-    print(f"dataset sizes (train/val): {len(train_dataset)}/{len(val_dataset)}")
+    # optional filtering
+    train_mask = onp.ones(len(train_dataset), dtype=bool)
+    val_mask = onp.ones(len(val_dataset), dtype=bool)
+    train_meta = onp.load(f"{config['train_path']}/metadata.npz")
+    val_meta = onp.load(f"{config['valid_path']}/metadata.npz")
+    stats_string = "stats"
 
-    if "atom_energies" in config:
-        atom_energies = [config["atom_energies"][n] for n in config["atomic_numbers"]]
+    if "subset" in config and config["subset"] is not None:
+        print(f"filtering dataset to subset={config['subset']} ...")
+        train_mask &= train_meta["data_ids"] == config["subset"]
+        val_mask &= val_meta["data_ids"] == config["subset"]
+        stats_string += f"_{config['subset']}"
+
+    if "molsize_range" in config and config["molsize_range"] is not None:
+        print(f"filtering dataset to molsize_range={config['molsize_range']} ...")
+        min_n, max_n = config["molsize_range"]
+        train_mask &= (train_meta["natoms"] >= min_n) & (train_meta["natoms"] <= max_n)
+        val_mask &= (val_meta["natoms"] >= min_n) & (val_meta["natoms"] <= max_n)
+        stats_string += f"_{min_n}-{max_n}atoms"
+
+    train_idx = onp.argwhere(train_mask).squeeze()
+    val_idx = onp.argwhere(val_mask).squeeze()
+    train_dataset = IndexDataset(train_dataset, train_idx)
+    val_dataset = IndexDataset(val_dataset, val_idx)
+
+    stats_path = f"{config['train_path']}/{stats_string}.npz"
+    if os.path.exists(stats_path):
+        print(f"loading dataset statistics from {stats_path} ...")
+        stats = onp.load(stats_path)
     else:
+        print("computing dataset statistics ...")
         atom_energies = average_atom_energies(train_dataset)
-
-    stats_keys = [
-        "shift",
-        "scale",
-        "avg_n_neighbors",
-        "max_n_edges",
-        "max_n_nodes",
-        "avg_n_nodes",
-        "avg_n_edges",
-    ]
-    if all(key in config for key in stats_keys):
-        stats = {key: config[key] for key in stats_keys}
-    else:
         stats = dataset_stats(train_dataset, atom_energies)
+        stats["atom_energies"] = atom_energies
+        onp.savez(stats_path, **stats)
+
+    print(f"dataset sizes (train/val): {len(train_dataset)}/{len(val_dataset)}")
+    for key, val in stats.items():
+        print(f"{key}: {val.item()}")
 
     num_devices = len(jax.devices())
     train_loader = DataLoader(
@@ -306,7 +316,7 @@ def train(config_path: str):
             shift=stats["shift"],
             scale=stats["scale"],
             avg_n_neighbors=stats["avg_n_neighbors"],
-            atom_energies=atom_energies,
+            atom_energies=stats["atom_energies"],
             spectral_layer_type=config["spectral_layer_type"]
             if "spectral_layer_type" in config
             else None,

@@ -25,6 +25,6 @@ def main(profile_device_memory: bool, jax_enable_x64: bool, overwrite: int):
     # grain.config.update('py_debug_mode', False)
     assert jax.default_backend() == "gpu"
 
-    train(config_path="configs/matbench.yml")
+    train(config_path="configs/omol25.yml")
     if profile_device_memory:
         jax.profiler.save_device_memory_profile("memory_profile.prof")

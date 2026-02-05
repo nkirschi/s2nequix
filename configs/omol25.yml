@@ -6,9 +6,10 @@ cutoff: 6.0
 seed: 0
 
 # dataset specific
-train_path: "/ceph/hdd/students/kirsc/data/omol25/train_4M"
-valid_frac: 0.2
-molsize_range: [100, 444]
+train_path: "/ceph/hdd/students/kirsc/data/omol25/train"
+valid_path: "/ceph/hdd/students/kirsc/data/omol25/val"
+subset: "spice"  # options: null, 'ani2x', 'biomolecules', 'elytes', 'geom_orca6', 'metal_complexes', 'orbnet_denali', 'reactivity', 'rgd', 'spice', 'trans1x'
+molsize_range: null # [100, 444]
 laplacian_cutoff_interval: [2.0, 10.0]
 num_eigenvectors: 16
 
@@ -29,7 +30,7 @@ mlp_init_scale: 4.0
 index_weights: false
 layer_norm: true
 kernel: true
-spectral_layer_type: null  # one of null, 'block-constant', 'scalar readout'
+spectral_layer_type: null  # options: null, 'block-constant', 'scalar readout'
 
 # training specific
 optimizer: "muon"
@@ -43,7 +44,7 @@ batch_size: 32  # NOTE: per device. buffer size depends on avg_n_nodes and since
 n_epochs: 200
 energy_weight: 20.0
 force_weight: 20.0
-stress_weight: 5.0
+stress_weight: 0.0  # no stress data in OMol25
 loss_type: "mae"
 log_every: 100
 ema_decay: 0.999
