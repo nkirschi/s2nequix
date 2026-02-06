@@ -272,7 +272,7 @@ def train(config_path: str):
 
     print(f"dataset sizes (train/val): {len(train_dataset)}/{len(val_dataset)}")
     for key, val in stats.items():
-        print(f"{key}: {val.item()}")
+        print(f"{key}: {val}")
 
     num_devices = len(jax.devices())
     train_loader = DataLoader(
