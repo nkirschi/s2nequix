@@ -18,6 +18,7 @@ fixed:
   jax_enable_x64: false
   config_path: "configs/omol25.yml"
   config_override:
+    checkpoint_dir: "checkpoints/"
     subset: "spice"
     molsize_range: null
     laplacian_cutoff_interval: [2.0, 10.0]

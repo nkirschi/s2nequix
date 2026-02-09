@@ -1,4 +1,4 @@
-state_path: "checkpoints/" # for saving/resuming training
+checkpoint_dir: "checkpoints/" # for saving/resuming training
 # resume_from: "checkpoints/.../matbench.pkl"
 # finetune_from: "models/.../matbench.nqx"
 
