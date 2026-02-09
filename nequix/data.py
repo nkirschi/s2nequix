@@ -254,12 +254,14 @@ class AseDBDataset(Dataset):
                 np.savez_compressed(spectral_path, **data)
 
             # partial EVD
-            if len(data["eigvals"]) < self.num_eigenvectors:
-                raise NotImplementedError("need to implement EVD padding for small molecules")
-            else:
-                data["eigvecs"] = data["eigvecs"][:, : self.num_eigenvectors]
-                data["eigvals"] = data["eigvals"][: self.num_eigenvectors]
-
+            n, k = data["eigvals"].shape[0], self.num_eigenvectors
+            n_copy = min(n, k)
+            padded_eigvals = np.zeros((k,), dtype=data["eigvals"].dtype)
+            padded_eigvecs = np.zeros((n, k), dtype=data["eigvecs"].dtype)
+            padded_eigvals[:n_copy] = data["eigvals"][:n_copy]
+            padded_eigvecs[:, :n_copy] = data["eigvecs"][:, :n_copy]
+            data["eigvals"] = padded_eigvals
+            data["eigvecs"] = padded_eigvecs
             graph |= data
 
         return graph
