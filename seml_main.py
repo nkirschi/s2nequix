@@ -1,7 +1,8 @@
 import jax
 
 from jax.experimental.compilation_cache import compilation_cache
-from nequix.train import train
+import yaml
+from nequix.train import _train
 from seml.experiment import Experiment
 
 ex = Experiment()
@@ -11,11 +12,20 @@ ex = Experiment()
 def default_config():
     profile_device_memory = False  # noqa: F841
     jax_enable_x64 = False  # noqa: F841
-    seed = 0  # noqa: F841
+    config_path = None  # noqa: F841
+    config_override = {  # noqa: F841
+        "seed": 0,
+        "subset": None,
+        "molsize_range": None,
+        "laplacian_cutoff_interval": None,
+        "num_eigenvectors": 16,
+    }
 
 
 @ex.automain
-def main(profile_device_memory: bool, jax_enable_x64: bool, overwrite: int):
+def main(
+    profile_device_memory: bool, jax_enable_x64: bool, config_path: str, config_override: dict
+):
     compilation_cache.set_cache_dir("./jax_cache")
     jax.config.update("jax_platform_name", "gpu")
     jax.config.update("jax_enable_x64", bool(jax_enable_x64))
@@ -25,6 +35,10 @@ def main(profile_device_memory: bool, jax_enable_x64: bool, overwrite: int):
     # grain.config.update('py_debug_mode', False)
     assert jax.default_backend() == "gpu"
 
-    train(config_path="configs/omol25.yml")
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    config.update(config_override)
+
+    _train(config=config)
     if profile_device_memory:
         jax.profiler.save_device_memory_profile("memory_profile.prof")

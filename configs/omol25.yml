@@ -1,6 +1,6 @@
-state_path: "checkpoints/omol25.pkl" # for saving/resuming training
-# resume_from: "checkpoints/matbench.pkl"
-# finetune_from: "models/matbench.nqx"
+state_path: "checkpoints/" # for saving/resuming training
+# resume_from: "checkpoints/.../matbench.pkl"
+# finetune_from: "models/.../matbench.nqx"
 
 cutoff: 6.0
 seed: 0

@@ -184,7 +184,10 @@ def train(config_path: str):
     """Train a Nequix model from a config file. See configs/nequix-mp-1.yaml for an example."""
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+    _train(config)
 
+
+def _train(config: dict):
     # use TMPDIR for slurm jobs if available
     config["cache_dir"] = config.get("cache_dir") or os.environ.get("TMPDIR")
 
@@ -206,6 +209,8 @@ def train(config_path: str):
     wandb.init(**wandb_init_kwargs)
     if hasattr(wandb, "run") and wandb.run is not None:
         wandb_run_id = getattr(wandb.run, "id", None)
+
+    checkpoint_path = Path(config["checkpoint_dir"]) / str(wandb_run_id)
 
     print(f"loading training dataset from {config['train_path']}...")
     train_dataset = AseDBDataset(
@@ -446,7 +451,10 @@ def train(config_path: str):
 
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
-            save_model(Path(wandb.run.dir) / "checkpoint.nqx", ema_model_single, config)
+            save_model(Path(wandb.run.dir) / "model.nqx", ema_model_single, config)
+            save_model(
+                Path(checkpoint_path) / f"model_epoch{epoch + 1}.nqx", ema_model_single, config
+            )
 
         save_training_state(
             Path(wandb.run.dir) / "state.pkl",
@@ -459,19 +467,17 @@ def train(config_path: str):
             best_val_loss,
             wandb_run_id=wandb_run_id,
         )
-
-        if "state_path" in config:
-            save_training_state(
-                config["state_path"],
-                model,
-                ema_model,
-                optim,
-                opt_state,
-                step,
-                epoch + 1,
-                best_val_loss,
-                wandb_run_id=wandb_run_id,
-            )
+        save_training_state(
+            Path(checkpoint_path) / f"state_epoch{epoch + 1}.pkl",
+            model,
+            ema_model,
+            optim,
+            opt_state,
+            step,
+            epoch + 1,
+            best_val_loss,
+            wandb_run_id=wandb_run_id,
+        )
 
         logs = {}
         for key, value in val_metrics.items():
