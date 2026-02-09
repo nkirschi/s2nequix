@@ -421,6 +421,9 @@ class SubepochalLoader:
             self.iterator = iter(self.dataloader)
             return next(self.iterator)
 
+    def set_epoch(self, epoch):
+        self.dataloader.set_epoch(epoch)
+
 
 class ParallelLoader:
     def __init__(self, loader: DataLoader, n: int):
