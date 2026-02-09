@@ -394,6 +394,34 @@ class DataLoader:
         return next(self._generator)
 
 
+class SubepochalLoader:
+    def __init__(self, dataloader: DataLoader, length: int):
+        self.dataloader = dataloader
+        self.length = length
+        self.iterator = None
+
+    def __iter__(self):
+        if self.iterator is None:
+            # preserve iterator across sub-epochs
+            self.iterator = iter(self.dataloader)
+        self.counter = 0
+        return self
+
+    def __len__(self):
+        return self.length
+
+    def __next__(self):
+        self.counter += 1
+        if self.counter > self.length:
+            raise StopIteration
+
+        try:
+            return next(self.iterator)
+        except StopIteration:
+            self.iterator = iter(self.dataloader)
+            return next(self.iterator)
+
+
 class ParallelLoader:
     def __init__(self, loader: DataLoader, n: int):
         self.loader = loader

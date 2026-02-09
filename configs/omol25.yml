@@ -42,6 +42,7 @@ weight_decay: 1.0e-3
 batch_size: 32  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
 # n_epochs: 100
 n_epochs: 200
+subepoch_length: 10_000  # number of batches per subepoch. set to null or remove for normal epoch-based training
 energy_weight: 20.0
 force_weight: 20.0
 stress_weight: 0.0  # no stress data in OMol25

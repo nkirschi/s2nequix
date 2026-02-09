@@ -21,6 +21,7 @@ from nequix.data import (
     AseDBDataset,
     IndexDataset,
     ParallelLoader,
+    SubepochalLoader,
     average_atom_energies,
     dataset_stats,
     prefetch,
@@ -285,6 +286,8 @@ def train(config_path: str):
         avg_n_edges=stats["avg_n_edges"],
         num_workers=16,
     )
+    if "subepoch_length" in config and config["subepoch_length"] is not None:
+        train_loader = SubepochalLoader(train_loader, length=config["subepoch_length"])
     train_loader = ParallelLoader(train_loader, num_devices)
     val_loader = DataLoader(
         val_dataset,
