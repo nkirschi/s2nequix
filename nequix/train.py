@@ -209,8 +209,11 @@ def _train(config: dict):
     wandb.init(**wandb_init_kwargs)
     if hasattr(wandb, "run") and wandb.run is not None:
         wandb_run_id = getattr(wandb.run, "id", None)
+        wandb.run.name += str(wandb_run_id)
+        wandb.run.save()
 
     checkpoint_path = Path(config["checkpoint_dir"]) / str(wandb_run_id)
+    os.makedirs(checkpoint_path, exist_ok=True)
 
     print(f"loading training dataset from {config['train_path']}...")
     train_dataset = AseDBDataset(
