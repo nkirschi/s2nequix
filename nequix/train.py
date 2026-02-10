@@ -249,8 +249,13 @@ def _train(config: dict):
     # optional filtering
     train_mask = onp.ones(len(train_dataset), dtype=bool)
     val_mask = onp.ones(len(val_dataset), dtype=bool)
-    train_meta = onp.load(f"{config['train_path']}/metadata.npz")
-    val_meta = onp.load(f"{config['valid_path']}/metadata.npz")
+    if "valid_frac" in config:
+        meta = onp.load(f"{config['train_path']}/metadata.npz")
+        train_meta = {k: v[train_dataset.indices] for k, v in meta.items()}
+        val_meta = {k: v[val_dataset.indices] for k, v in meta.items()}
+    else:
+        train_meta = onp.load(f"{config['train_path']}/metadata.npz")
+        val_meta = onp.load(f"{config['valid_path']}/metadata.npz")
     stats_string = "stats"
 
     if "subset" in config and config["subset"] is not None:
@@ -301,7 +306,7 @@ def _train(config: dict):
         train_loader = SubepochalLoader(train_loader, length=config["subepoch_length"])
         print(f"using subepochs of {config['subepoch_length']} batches")
     else:
-        print(f"using full epochs of {len(train_loader)} batches")
+        print("using full epochs")
     train_loader = ParallelLoader(train_loader, num_devices)
     val_loader = DataLoader(
         val_dataset,
