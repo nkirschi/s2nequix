@@ -1,5 +1,5 @@
 seml:
-  executable: seml_main.py
+  executable: seml_run.py
   output_dir: ./output_log/slurm/s2nequix
   project_root_dir: ./
 
@@ -16,9 +16,9 @@ slurm:
 fixed:
   profile_device_memory: false
   jax_enable_x64: false
-  config_path: "configs/3bpa.yml"  # path to base config file
+  config_path: "configs/omol25.yml"  # path to base config file
 
-grid:
+grid:  # remember to increase slurm time limit
   config_override:
     seed:
       type: choice

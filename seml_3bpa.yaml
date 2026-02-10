@@ -1,0 +1,36 @@
+seml:
+  executable: seml_run.py
+  output_dir: ./output_log/slurm/s2nequix
+  project_root_dir: ./
+
+slurm:
+  - experiments_per_job: 1
+    sbatch_options:
+      gres: gpu:1 # num GPUs
+      mem: 32G # memory
+      cpus-per-task: 8 # num cores
+      time: 3-00:00 # max time, D-HH:MM
+      partition: gpu_a100
+      qos: default # default # interactive
+
+fixed:
+  profile_device_memory: false
+  jax_enable_x64: false
+  config_path: "configs/3bpa.yml"  # path to base config file
+
+grid:
+  config_override:
+    seed:
+      type: choice
+      options:
+        - 1
+        #- 2
+        #- 3
+
+    force_weight:
+      type: choice
+      options:
+        - 0.1
+        - 10.0
+        - 100.0
+        - 1000.0
