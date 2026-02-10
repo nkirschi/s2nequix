@@ -2,7 +2,6 @@ checkpoint_dir: "checkpoints/" # for saving/resuming training
 # resume_from: "checkpoints/.../matbench.pkl"
 # finetune_from: "models/.../matbench.nqx"
 
-cutoff: 6.0
 seed: 0
 
 # dataset specific
@@ -17,11 +16,12 @@ atomic_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 
 
 
 # model specific
-#hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"
+#hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"  USE THIS FOR FINAL TRAINING
 #lmax: 3
 hidden_irreps: "128x0e + 64x1o + 32x2e"
 lmax: 2
-n_layers: 4
+n_layers: 4  # default nequiX
+cutoff: 6.0  # default nequiX
 radial_basis_size: 8
 radial_mlp_size: 64
 radial_mlp_layers: 2
@@ -40,12 +40,11 @@ warmup_factor: 0.2
 grad_clip_norm: 100.0
 weight_decay: 1.0e-3
 batch_size: 32  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
-# n_epochs: 100
-n_epochs: 200
+n_epochs: 1_000_000_000  # effective infinity (early stopping)
 subepoch_length: 10_000  # number of batches per subepoch. set to null or remove for normal epoch-based training
 energy_weight: 20.0
 force_weight: 20.0
 stress_weight: 0.0  # no stress data in OMol25
 loss_type: "mae"
 log_every: 100
-ema_decay: 0.999
+ema_decay: 0.995

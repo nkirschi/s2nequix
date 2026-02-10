@@ -187,6 +187,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+checkpoints/*
 output_log/*
 jax_cache/*
 settings.json
