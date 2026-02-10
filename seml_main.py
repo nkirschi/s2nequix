@@ -13,13 +13,10 @@ def default_config():
     profile_device_memory = False  # noqa: F841
     jax_enable_x64 = False  # noqa: F841
     config_path = None  # noqa: F841
-    config_override = {  # noqa: F841
-        "seed": 0,
-        "subset": None,
-        "molsize_range": None,
-        "laplacian_cutoff_interval": None,
-        "num_eigenvectors": 16,
-    }
+    if config_path is not None:
+        with open(config_path, "r") as f:
+            config_override = yaml.safe_load(f)  # noqa: F841
+        del f
 
 
 @ex.automain
@@ -35,10 +32,6 @@ def main(
     # grain.config.update('py_debug_mode', False)
     assert jax.default_backend() == "gpu"
 
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    config.update(config_override)
-
-    _train(config=config)
+    _train(config=config_override)
     if profile_device_memory:
         jax.profiler.save_device_memory_profile("memory_profile.prof")
