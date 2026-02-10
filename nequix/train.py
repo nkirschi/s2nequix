@@ -209,8 +209,11 @@ def _train(config: dict):
     wandb.init(**wandb_init_kwargs)
     if hasattr(wandb, "run") and wandb.run is not None:
         wandb_run_id = getattr(wandb.run, "id", None)
-        wandb.run.name += str(wandb_run_id)
-        wandb.run.save()
+        try:
+            run_suffix = f"-{wandb.run.name.split('-')[-1]}"
+        except IndexError:
+            run_suffix = ""
+        wandb.run.name = f"{wandb_run_id}{run_suffix}"
 
     checkpoint_path = Path(config["checkpoint_dir"]) / str(wandb_run_id)
     os.makedirs(checkpoint_path, exist_ok=True)
@@ -296,6 +299,9 @@ def _train(config: dict):
     )
     if "subepoch_length" in config and config["subepoch_length"] is not None:
         train_loader = SubepochalLoader(train_loader, length=config["subepoch_length"])
+        print(f"using subepochs of {config['subepoch_length']} batches")
+    else:
+        print(f"using full epochs of {len(train_loader)} batches")
     train_loader = ParallelLoader(train_loader, num_devices)
     val_loader = DataLoader(
         val_dataset,
