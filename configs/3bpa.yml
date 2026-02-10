@@ -1,0 +1,54 @@
+# closely following https://github.com/teddykoker/nequip-eqx/blob/main/configs/3bpa.yml
+
+checkpoint_dir: "checkpoints/" # for saving/resuming training
+# resume_from: "checkpoints/.../matbench.pkl"
+# finetune_from: "models/.../matbench.nqx"
+
+seed: 0
+
+# dataset specific
+train_path: "/ceph/hdd/students/kirsc/data/3bpa/train_300K"
+valid_frac: 0.1
+laplacian_cutoff_interval: [2.0, 10.0]
+num_eigenvectors: 16
+
+atomic_numbers: [1, 6, 7, 8]  # 3BPA is C_12 ​H_12 ​N_2 ​O
+
+
+# model specific
+hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"
+lmax: 3
+n_layers: 4  # default nequiX
+cutoff: 6.0  # default nequiX
+radial_basis_size: 8
+radial_mlp_size: 64
+radial_mlp_layers: 2
+radial_polynomial_p: 6.0
+mlp_init_scale: 4.0
+index_weights: false
+layer_norm: true
+kernel: true
+spectral_layer_type: null  # options: null, 'block-constant', 'scalar readout'
+
+# training specific
+optimizer: "muon"
+learning_rate: 0.01
+warmup_epochs: 0.1  # O(2) , replace cos decay with plateau scheduler and early stopping (large number of patience epochs) like original nequip
+warmup_factor: 0.2
+grad_clip_norm: 100.0
+weight_decay: 1.0e-6
+# early_stopping_patience: 100
+# early_stopping_delta: 1e-5
+      #  "lr_scheduler_name": "ReduceLROnPlateau",
+      #  "lr_scheduler_patience": 20,
+      #  "lr_scheduler_factor": 0.8,
+batch_size: 10  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
+n_epochs: 1_000_000
+energy_weight: 1.0
+force_weight: 1.0
+stress_weight: 0.0  # no stress data in 3BPA
+loss_type: "mae"
+log_every: 100
+ema_decay: 0.995 # reset to eike
+
+# to hyper-optimise: schedule, base lr, ema_decay, forces-to-energy ratio
