@@ -31,7 +31,7 @@ def main(
     jax.config.update("jax_debug_nans", False)
     # grain.config.update('py_debug_mode', False)
     assert jax.default_backend() == "gpu"
-
-    _train(config=config_override)
+    config = {} | config_override  # need to copy because config_override is read-only
+    _train(config=config)
     if profile_device_memory:
         jax.profiler.save_device_memory_profile("memory_profile.prof")

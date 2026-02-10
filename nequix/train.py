@@ -26,6 +26,7 @@ from nequix.data import (
     dataset_stats,
     prefetch,
 )
+from nequix.early_stopping import EarlyStopping
 from nequix.model import Nequix, save_model, weight_decay_mask
 
 
@@ -189,7 +190,20 @@ def train(config_path: str):
 
 def _train(config: dict):
     # use TMPDIR for slurm jobs if available
-    config["cache_dir"] = config.get("cache_dir") or os.environ.get("TMPDIR")
+    if "schedule" not in config:
+        config["schedule"] = "cosine"
+    if "early_stopping_patience" not in config:
+        config["early_stopping_patience"] = int(1e20)
+    if "early_stopping_min_relative_improvement" not in config:
+        config["early_stopping_min_relative_improvement"] = 0.0
+    if "molsize_range" not in config:
+        config["molsize_range"] = None
+    if "dataset_name" not in config:
+        config["dataset_name"] = None
+    if "subset" not in config:
+        config["subset"] = None
+    if "valid_path" not in config:
+        config["valid_path"] = None
 
     wandb_init_kwargs = {"project": "nequix", "config": config}
     using_checkpoint = "resume_from" in config and Path(config["resume_from"]).exists()
@@ -233,11 +247,7 @@ def _train(config: dict):
         num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
     )
 
-    if "valid_frac" in config:
-        print(f"splitting training dataset with valid_frac={config['valid_frac']} ...")
-        train_dataset, val_dataset = train_dataset.split(valid_frac=config["valid_frac"])
-    else:
-        assert "valid_path" in config, "valid_path must be specified if valid_frac is not provided"
+    if config["valid_path"] is not None:
         print(f"loading validation dataset from {config['valid_path']}...")
         val_dataset = AseDBDataset(
             file_path=config["valid_path"],
@@ -245,26 +255,30 @@ def _train(config: dict):
             cutoff=config["cutoff"],
             backend="jax",
         )
+    else:
+        assert "valid_frac" in config, "valid_frac must be specified if valid_path is not provided"
+        print(f"splitting training dataset with valid_frac={config['valid_frac']} ...")
+        train_dataset, val_dataset = train_dataset.split(valid_frac=config["valid_frac"])
 
     # optional filtering
     train_mask = onp.ones(len(train_dataset), dtype=bool)
     val_mask = onp.ones(len(val_dataset), dtype=bool)
-    if "valid_frac" in config:
+    if config["valid_path"] is not None:
+        train_meta = onp.load(f"{config['train_path']}/metadata.npz")
+        val_meta = onp.load(f"{config['valid_path']}/metadata.npz")
+    else:
         meta = onp.load(f"{config['train_path']}/metadata.npz")
         train_meta = {k: v[train_dataset.indices] for k, v in meta.items()}
         val_meta = {k: v[val_dataset.indices] for k, v in meta.items()}
-    else:
-        train_meta = onp.load(f"{config['train_path']}/metadata.npz")
-        val_meta = onp.load(f"{config['valid_path']}/metadata.npz")
     stats_string = "stats"
 
-    if "subset" in config and config["subset"] is not None:
+    if config["subset"] is not None:
         print(f"filtering dataset to subset={config['subset']} ...")
         train_mask &= train_meta["data_ids"] == config["subset"]
         val_mask &= val_meta["data_ids"] == config["subset"]
         stats_string += f"_{config['subset']}"
 
-    if "molsize_range" in config and config["molsize_range"] is not None:
+    if config["molsize_range"] is not None:
         print(f"filtering dataset to molsize_range={config['molsize_range']} ...")
         min_n, max_n = config["molsize_range"]
         train_mask &= (train_meta["natoms"] >= min_n) & (train_meta["natoms"] <= max_n)
@@ -347,38 +361,64 @@ def _train(config: dict):
 
     # NB: this is not exact because of dynamic batching but should be close enough
     steps_per_epoch = len(train_dataset) // (config["batch_size"] * jax.device_count())
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=config["learning_rate"] * config["warmup_factor"],
-        peak_value=config["learning_rate"],
-        end_value=1e-6,
-        warmup_steps=config["warmup_epochs"] * steps_per_epoch,
-        decay_steps=config["n_epochs"] * steps_per_epoch,
+    match config["schedule"]:
+        case "cosine":
+            schedule = optax.warmup_cosine_decay_schedule(
+                init_value=config["learning_rate"] * config["warmup_factor"],
+                peak_value=config["learning_rate"],
+                end_value=1e-6,
+                warmup_steps=config["warmup_epochs"] * steps_per_epoch,
+                decay_steps=config["n_epochs"] * steps_per_epoch,
+            )
+            # effectively disable plateau reducer since we're using cosine schedule
+            plateau_reducer = optax.contrib.reduce_on_plateau(patience=0, factor=1.0)
+        case "plateau":
+            assert "plateau_patience" in config, (
+                "plateau_patience must be specified for plateau schedule"
+            )
+            assert "plateau_factor" in config, (
+                "plateau_factor must be specified for plateau schedule"
+            )
+            schedule = optax.warmup_constant_schedule(
+                init_value=config["learning_rate"] * config["warmup_factor"],
+                peak_value=config["learning_rate"],
+                warmup_steps=config["warmup_epochs"] * steps_per_epoch,
+            )
+            plateau_reducer = optax.contrib.reduce_on_plateau(
+                patience=config["plateau_patience"],
+                factor=config["plateau_factor"],
+            )
+        case _:
+            raise ValueError(f"learning rate schedule {config['schedule']} not supported")
+
+    plateau_state = plateau_reducer.init(None)
+    early_stopping = EarlyStopping(
+        patience=config["early_stopping_patience"],
+        min_relative_improvement=config["early_stopping_min_relative_improvement"],
     )
 
     if not using_checkpoint:
-        if config["optimizer"] == "adamw":
-            optim = optax.chain(
-                optax.clip_by_global_norm(config["grad_clip_norm"]),
-                optax.adamw(
+        match config["optimizer"]:
+            case "adamw":
+                optim = optax.adamw(
                     learning_rate=schedule,
                     weight_decay=config["weight_decay"],
                     mask=weight_decay_mask(model),
-                ),
-            )
-        elif config["optimizer"] == "muon":
-            optim = optax.chain(
-                optax.clip_by_global_norm(config["grad_clip_norm"]),
-                optax.contrib.muon(
+                )
+            case "muon":
+                optim = optax.contrib.muon(
                     learning_rate=schedule,
                     weight_decay=config["weight_decay"] if config["weight_decay"] != 0.0 else None,
                     weight_decay_mask=weight_decay_mask(model),
-                ),
-            )
-        else:
-            raise ValueError(f"optimizer {config['optimizer']} not supported")
+                )
+            case _:
+                raise ValueError(f"optimizer {config['optimizer']} not supported")
 
+        optim = optax.chain(
+            optax.clip_by_global_norm(config["grad_clip_norm"]),
+            optim,
+        )
         opt_state = optim.init(eqx.filter(model, eqx.is_array))
-
         model = jax.device_put_replicated(model, list(jax.devices()))
         opt_state = jax.device_put_replicated(opt_state, list(jax.devices()))
         ema_model = jax.tree.map(lambda x: x.copy(), model)  # copy model
@@ -393,8 +433,8 @@ def _train(config: dict):
     )
 
     # @eqx.filter_jit
-    @functools.partial(eqx.filter_pmap, in_axes=(0, 0, None, 0, 0), axis_name="device")
-    def train_step(model, ema_model, step, opt_state, batch):
+    @functools.partial(eqx.filter_pmap, in_axes=(0, 0, None, 0, 0, None), axis_name="device")
+    def train_step(model, ema_model, step, opt_state, batch, lr_scale):
         # training step
         (total_loss, metrics), grads = eqx.filter_value_and_grad(loss, has_aux=True)(
             model,
@@ -406,6 +446,7 @@ def _train(config: dict):
         )
         grads = jax.lax.pmean(grads, axis_name="device")
         updates, opt_state = optim.update(grads, opt_state, eqx.filter(model, eqx.is_array))
+        updates = jax.tree.map(lambda x: lr_scale * x, updates)  # plateau handling factor
         model = eqx.apply_updates(model, updates)
 
         # update EMA model
@@ -433,14 +474,14 @@ def _train(config: dict):
             batch_time = time.time() - start_time
             start_time = time.time()
             (model, ema_model, opt_state, total_loss, metrics) = train_step(
-                model, ema_model, step, opt_state, batch
+                model, ema_model, step, opt_state, batch, plateau_state.scale
             )
             train_time = time.time() - start_time
             step = step + 1
             if step % config["log_every"] == 0:
                 logs = {}
                 logs["train/loss"] = total_loss.mean().item()
-                logs["learning_rate"] = schedule(step).item()
+                logs["learning_rate"] = schedule(step).item() * plateau_state.scale
                 logs["train/batch_time"] = batch_time
                 logs["train/train_time"] = train_time
                 for key, value in metrics.items():
@@ -465,33 +506,19 @@ def _train(config: dict):
 
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
-            save_model(Path(wandb.run.dir) / "model.nqx", ema_model_single, config)
-            save_model(
-                Path(checkpoint_path) / f"model_epoch{epoch + 1}.nqx", ema_model_single, config
-            )
-
-        save_training_state(
-            Path(wandb.run.dir) / "state.pkl",
-            model,
-            ema_model,
-            optim,
-            opt_state,
-            step,
-            epoch + 1,
-            best_val_loss,
-            wandb_run_id=wandb_run_id,
-        )
-        save_training_state(
-            Path(checkpoint_path) / f"state_epoch{epoch + 1}.pkl",
-            model,
-            ema_model,
-            optim,
-            opt_state,
-            step,
-            epoch + 1,
-            best_val_loss,
-            wandb_run_id=wandb_run_id,
-        )
+            for path in [Path(wandb.run.dir), Path(checkpoint_path)]:
+                save_model(path / "model.nqx", ema_model_single, config)
+                save_training_state(
+                    path / "state.pkl",
+                    model,
+                    ema_model,
+                    optim,
+                    opt_state,
+                    step,
+                    epoch + 1,
+                    best_val_loss,
+                    wandb_run_id=wandb_run_id,
+                )
 
         logs = {}
         for key, value in val_metrics.items():
@@ -500,6 +527,16 @@ def _train(config: dict):
         wandb.log(logs, step=step)
         print(f"epoch: {epoch}, logs: {logs}")
         wandb_sync()
+
+        _, plateau_state = plateau_reducer.update(
+            updates=None,
+            state=plateau_state,
+            value=val_metrics["loss"],
+        )
+
+        if early_stopping.stop(val_metrics["loss"]):
+            print(f">>> EARLY STOPPING at epoch {epoch} <<<")
+            break
 
 
 def main():

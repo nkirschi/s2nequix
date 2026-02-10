@@ -5,15 +5,14 @@ checkpoint_dir: "checkpoints/" # for saving/resuming training
 seed: 0
 
 # dataset specific
+dataset_name: "OMol25"
 train_path: "/ceph/hdd/students/kirsc/data/omol25/train"
 valid_path: "/ceph/hdd/students/kirsc/data/omol25/val"
 subset: "spice"  # options: null, 'ani2x', 'biomolecules', 'elytes', 'geom_orca6', 'metal_complexes', 'orbnet_denali', 'reactivity', 'rgd', 'spice', 'trans1x'
 molsize_range: null # [100, 444]
 laplacian_cutoff_interval: [2.0, 10.0]
 num_eigenvectors: 16
-
 atomic_numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83]
-
 
 # model specific
 #hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"  USE THIS FOR FINAL TRAINING
@@ -35,16 +34,21 @@ spectral_layer_type: null  # options: null, 'block-constant', 'scalar readout'
 # training specific
 optimizer: "muon"
 learning_rate: 0.01
+schedule: "plateau"  # options: 'cosine', 'plateau'
 warmup_epochs: 0.1
 warmup_factor: 0.2
+plateau_patience: 3
+plateau_factor: 0.8
 grad_clip_norm: 100.0
 weight_decay: 1.0e-3
-batch_size: 32  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
+batch_size: 32  # NOTE: per device
 n_epochs: 1_000_000_000  # effective infinity (early stopping)
 subepoch_length: 10_000  # number of batches per subepoch. set to null or remove for normal epoch-based training
-energy_weight: 20.0
-force_weight: 20.0
+early_stopping_patience: 5
+early_stopping_min_relative_improvement: 1e-5
+energy_weight: 1.0
+force_weight: 1.0
 stress_weight: 0.0  # no stress data in OMol25
 loss_type: "mae"
-log_every: 100
+log_every: 100  # batches, not epochs
 ema_decay: 0.995
