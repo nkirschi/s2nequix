@@ -8,7 +8,7 @@ seed: 0
 dataset_name: "OMol25"
 train_path: "/ceph/hdd/students/kirsc/data/omol25/train"
 valid_path: "/ceph/hdd/students/kirsc/data/omol25/val"
-subset: "biomolecules"  # options: null, 'ani2x', 'biomolecules', 'elytes', 'geom_orca6', 'metal_complexes', 'orbnet_denali', 'reactivity', 'rgd', 'spice', 'trans1x'
+subset: null  # options: null, 'ani2x', 'biomolecules', 'elytes', 'geom_orca6', 'metal_complexes', 'orbnet_denali', 'reactivity', 'rgd', 'spice', 'trans1x'
 molsize_range: null # [100, 444]
 laplacian_cutoff_interval: [2.0, 10.0]
 num_eigenvectors: 16

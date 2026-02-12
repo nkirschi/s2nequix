@@ -19,6 +19,7 @@ fixed:
   run_notes: "Biomolecules lr and force weight scan"
   config_path: "configs/omol25.yml"  # path to base config file
   config_override:  # override entries from the base config file
+    subset: "spice"
 
 
 grid:  # remember to increase slurm time limit
