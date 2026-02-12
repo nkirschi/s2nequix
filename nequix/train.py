@@ -188,7 +188,7 @@ def train(config_path: str):
     _train(config)
 
 
-def _train(config: dict):
+def _train(config: dict, run_notes: str = ""):
     # use TMPDIR for slurm jobs if available
     if "schedule" not in config:
         config["schedule"] = "cosine"
@@ -205,7 +205,7 @@ def _train(config: dict):
     if "valid_path" not in config:
         config["valid_path"] = None
 
-    wandb_init_kwargs = {"project": "nequix", "config": config}
+    wandb_init_kwargs = {"project": "nequix", "config": config, "notes": run_notes}
     using_checkpoint = "resume_from" in config and Path(config["resume_from"]).exists()
     if using_checkpoint:
         (

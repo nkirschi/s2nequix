@@ -12,6 +12,7 @@ ex = Experiment()
 def default_config():
     profile_device_memory = False  # noqa: F841
     jax_enable_x64 = False  # noqa: F841
+    run_notes = ""  # noqa: F841
     config_path = None  # noqa: F841
     if config_path is not None:
         with open(config_path, "r") as f:
@@ -21,7 +22,10 @@ def default_config():
 
 @ex.automain
 def main(
-    profile_device_memory: bool, jax_enable_x64: bool, config_path: str, config_override: dict
+    profile_device_memory: bool,
+    jax_enable_x64: bool,
+    run_notes: str,
+    config_override: dict,
 ):
     compilation_cache.set_cache_dir("./jax_cache")
     jax.config.update("jax_platform_name", "gpu")
@@ -32,6 +36,6 @@ def main(
     # grain.config.update('py_debug_mode', False)
     assert jax.default_backend() == "gpu"
     config = {} | config_override  # need to copy because config_override is read-only
-    _train(config=config)
+    _train(config=config, run_notes=run_notes)
     if profile_device_memory:
         jax.profiler.save_device_memory_profile("memory_profile.prof")
