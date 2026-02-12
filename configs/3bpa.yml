@@ -44,7 +44,7 @@ n_epochs: 1_000_000
 early_stopping_patience: 100
 early_stopping_min_relative_improvement: 1.0e-5
 energy_weight: 1.0
-force_weight: 1.0
+force_weight: 10.0
 stress_weight: 0.0  # no stress data in 3BPA
 loss_type: "mae"
 log_every: 50  # batches, not epochs
