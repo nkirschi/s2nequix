@@ -204,6 +204,8 @@ def _train(config: dict, run_notes: str = ""):
         config["subset"] = None
     if "valid_path" not in config:
         config["valid_path"] = None
+    if "model" not in config:
+        config["model"] = "nequix"
 
     wandb_init_kwargs = {"project": "nequix", "config": config, "notes": run_notes}
     using_checkpoint = "resume_from" in config and Path(config["resume_from"]).exists()
@@ -238,9 +240,7 @@ def _train(config: dict, run_notes: str = ""):
         atomic_numbers=config["atomic_numbers"],
         cutoff=config["cutoff"],
         backend="jax",
-        load_spectral=(config["spectral_layer_type"] is not None)
-        if "spectral_layer_type" in config
-        else False,
+        load_spectral=(config["model"] != "nequix"),
         laplacian_cutoff_interval=tuple(config["laplacian_cutoff_interval"])
         if "laplacian_cutoff_interval" in config
         else None,
@@ -353,9 +353,7 @@ def _train(config: dict, run_notes: str = ""):
             scale=stats["scale"],
             avg_n_neighbors=stats["avg_n_neighbors"],
             atom_energies=stats["atom_energies"],
-            spectral_layer_type=config["spectral_layer_type"]
-            if "spectral_layer_type" in config
-            else None,
+            model_type=config["model"],
         )
     print_summary(model)
 

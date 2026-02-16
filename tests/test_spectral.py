@@ -32,7 +32,7 @@ def test_spectral_layer_initially_outputs_zero():
     layer = EquivariantSpectralLayer(
         input_irreps=input_irreps,
         output_irreps=output_irreps,
-        spectral_layer_type="block-constant",
+        model_type="s2nequix",
         key=key,
     )
     out = layer(x, eigvals, eigvecs, batch_index)
@@ -57,7 +57,7 @@ def test_spectral_layer_is_equivariant():
     layer = EquivariantSpectralLayer(
         input_irreps=input_irreps,
         output_irreps=output_irreps,
-        spectral_layer_type="block-constant",
+        model_type="s2nequix",
         key=key,
         init_last_layer_to_zero=False,  # note: zero initialisation would make the test trivial
     )
@@ -86,7 +86,7 @@ def test_spectral_layer_is_equivariant_with_dynamic_batching():
     layer = EquivariantSpectralLayer(
         input_irreps=input_irreps,
         output_irreps=output_irreps,
-        spectral_layer_type="block-constant",
+        model_type="s2nequix",
         key=key,
         init_last_layer_to_zero=False,  # note: zero initialisation would make the test trivial
     )

@@ -210,7 +210,7 @@ class EquivariantSpectralLayer(eqx.Module):
     input_irreps: e3nn.Irreps = eqx.field(static=True)
     output_irreps: e3nn.Irreps = eqx.field(static=True)
     gate: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
-    spectral_layer_type: str = eqx.field(static=True)
+    model_type: str = eqx.field(static=True)
 
     e3nn_linear1: e3nn.equinox.Linear
     e3nn_linear2: e3nn.equinox.Linear
@@ -222,7 +222,7 @@ class EquivariantSpectralLayer(eqx.Module):
         key: jax.Array,
         input_irreps: e3nn.Irreps,
         output_irreps: e3nn.Irreps,
-        spectral_layer_type: str,
+        model_type: str,
         even_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
         odd_activation: Callable[[jax.Array], jax.Array] = jax.nn.tanh,
         gate_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
@@ -230,7 +230,7 @@ class EquivariantSpectralLayer(eqx.Module):
     ):
         self.input_irreps = input_irreps
         self.output_irreps = output_irreps
-        self.spectral_layer_type = spectral_layer_type
+        self.model_type = model_type
 
         # gate needs one extra scalar for each non-scalar
         num_nonscalar = input_irreps.filter(drop="0e + 0o").num_irreps  # type: ignore
@@ -312,7 +312,7 @@ class Nequix(eqx.Module):
     cutoff: float = eqx.field(static=True)
     shift: float = eqx.field(static=True)
     scale: float = eqx.field(static=True)
-    spectral_layer_type: Optional[str] = eqx.field(static=True)
+    model_type: Optional[str] = eqx.field(static=True)
 
     atom_energies: jax.Array
     spatial_layers: list[NequixConvolution]
@@ -338,7 +338,7 @@ class Nequix(eqx.Module):
         avg_n_neighbors: float = 1.0,
         atom_energies: Optional[Sequence[float]] = None,
         layer_norm: bool = False,
-        spectral_layer_type: Optional[str] = None,
+        model_type: Optional[str] = "nequix",
     ):
         self.lmax = lmax
         self.cutoff = cutoff
@@ -347,7 +347,7 @@ class Nequix(eqx.Module):
         self.radial_polynomial_p = radial_polynomial_p
         self.shift = shift
         self.scale = scale
-        self.spectral_layer_type = spectral_layer_type
+        self.model_type = model_type
         self.atom_energies = (
             jnp.array(atom_energies)
             if atom_energies is not None
@@ -363,7 +363,9 @@ class Nequix(eqx.Module):
         for i in range(n_layers):
             subkey = subkeys[i]
 
-            if self.spectral_layer_type is not None:
+            if self.model_type == "nequix":
+                self.spectral_layers = None
+            else:
                 subkey, subkey2 = jax.random.split(subkey, 2)
                 self.spectral_layers.append(
                     EquivariantSpectralLayer(
@@ -373,7 +375,7 @@ class Nequix(eqx.Module):
                         output_irreps=hidden_irreps
                         if i < n_layers - 1
                         else hidden_irreps.filter("0e"),
-                        spectral_layer_type=self.spectral_layer_type,
+                        model_type=self.model_type,
                         key=subkey2,
                     )
                 )
@@ -444,7 +446,7 @@ class Nequix(eqx.Module):
                 senders,
                 receivers,
             )
-            if self.spectral_layer_type is not None:
+            if self.spectral_layers is not None:
                 features += self.spectral_layers[i](
                     features,
                     eigvals,

@@ -15,6 +15,7 @@ num_eigenvectors: 16
 atomic_numbers: [1, 6, 7, 8]  # 3BPA is C_12 ​H_12 ​N_2 ​O
 
 # model specific
+model: "nequix"  # options: "nequix, s2nequix-v1"
 hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"
 lmax: 3
 n_layers: 4  # default nequiX
@@ -27,7 +28,6 @@ mlp_init_scale: 4.0
 index_weights: false
 layer_norm: true
 kernel: true
-spectral_layer_type: null  # options: null, 'block-constant', 'scalar readout'
 
 # training specific
 optimizer: "muon"
