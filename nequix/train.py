@@ -4,6 +4,7 @@ import os
 import time
 from collections import defaultdict
 from pathlib import Path
+from contextlib import closing
 
 import cloudpickle
 import equinox as eqx
@@ -115,17 +116,18 @@ def evaluate(
     model, dataloader, energy_weight=1.0, force_weight=1.0, stress_weight=1.0, loss_type="huber"
 ):
     """Return loss and RMSE of energy and force in eV and eV/Å respectively"""
-    total_metrics = defaultdict(int)
+    total_metrics = defaultdict(float)
     total_count = 0
-    for batch in prefetch(dataloader):
-        n_graphs = jnp.sum(jraph.get_graph_padding_mask(batch))
-        val_loss, metrics = loss(
-            model, batch, energy_weight, force_weight, stress_weight, loss_type
-        )
-        total_metrics["loss"] += val_loss * n_graphs
-        for key, value in metrics.items():
-            total_metrics[key] += value * n_graphs
-        total_count += n_graphs
+    with closing(prefetch(dataloader)) as prefetched_dataloader:
+        for batch in prefetched_dataloader:
+            n_graphs = jnp.sum(jraph.get_graph_padding_mask(batch)).item()
+            val_loss, metrics = loss(
+                model, batch, energy_weight, force_weight, stress_weight, loss_type
+            )
+            total_metrics["loss"] += val_loss.item() * n_graphs
+            for key, value in metrics.items():
+                total_metrics[key] += value.item() * n_graphs
+            total_count += n_graphs
 
     for key, value in total_metrics.items():
         total_metrics[key] = value / total_count
@@ -202,6 +204,8 @@ def _train(config: dict, run_notes: str = ""):
         config["dataset_name"] = None
     if "subset" not in config:
         config["subset"] = None
+    if "num_workers" not in config:
+        config["num_workers"] = 16
     if "valid_path" not in config:
         config["valid_path"] = None
     if "model" not in config:
@@ -230,6 +234,10 @@ def _train(config: dict, run_notes: str = ""):
         except IndexError:
             run_suffix = ""
         wandb.run.name = f"{wandb_run_id}{run_suffix}"
+        print(80 * "=")
+        print(f"wandb.run.name: {wandb.run.name}")
+        print(f"SLURM_JOB_ID: {os.environ.get('SLURM_JOB_ID')}")
+        print(80 * "=")
 
     checkpoint_path = Path(config["checkpoint_dir"]) / str(wandb_run_id)
     os.makedirs(checkpoint_path, exist_ok=True)
@@ -297,7 +305,7 @@ def _train(config: dict, run_notes: str = ""):
     else:
         print("computing dataset statistics ...")
         atom_energies = average_atom_energies(train_dataset)
-        stats = dataset_stats(train_dataset, atom_energies)
+        stats = dataset_stats(train_dataset, atom_energies, num_workers=config["num_workers"])
         stats["atom_energies"] = atom_energies
         onp.savez(stats_path, **stats)
 
@@ -314,7 +322,7 @@ def _train(config: dict, run_notes: str = ""):
         max_n_edges=stats["max_n_edges"],
         avg_n_nodes=stats["avg_n_nodes"],
         avg_n_edges=stats["avg_n_edges"],
-        num_workers=16,
+        num_workers=config["num_workers"],
     )
     if "subepoch_length" in config and config["subepoch_length"] is not None:
         train_loader = SubepochalLoader(train_loader, length=config["subepoch_length"])
@@ -330,7 +338,7 @@ def _train(config: dict, run_notes: str = ""):
         max_n_edges=stats["max_n_edges"],
         avg_n_nodes=stats["avg_n_nodes"],
         avg_n_edges=stats["avg_n_edges"],
-        num_workers=16,
+        num_workers=config["num_workers"],
     )
 
     if not using_checkpoint:
@@ -520,7 +528,7 @@ def _train(config: dict, run_notes: str = ""):
 
         logs = {}
         for key, value in val_metrics.items():
-            logs[f"val/{key}"] = value.item()
+            logs[f"val/{key}"] = value
         logs["epoch"] = epoch
         wandb.log(logs, step=step)
         print(f"epoch: {epoch}, logs: {logs}")
