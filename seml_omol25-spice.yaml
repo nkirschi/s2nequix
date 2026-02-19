@@ -16,7 +16,7 @@ slurm:
 fixed:
   profile_device_memory: false
   jax_enable_x64: false
-  run_notes: "Biomolecules lr and force weight scan"
+  run_notes: "SPICE weight_decay scan"
   config_path: "configs/omol25.yml"  # path to base config file
   config_override:  # override entries from the base config file
     subset: "spice"
@@ -30,14 +30,10 @@ grid:  # remember to increase slurm time limit
         - 1
         #- 2
         #- 3
-    force_weight:
+    weight_decay:
       type: choice
       options:
-        - 10
-        - 1000
-    learning_rate:
-      type: choice
-      options:
-        - 0.01
-        - 0.03
-        - 0.003
+        - 1e-3
+        - 1e-4
+        - 1e-5
+        - 1e-6

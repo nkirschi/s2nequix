@@ -16,10 +16,10 @@ slurm:
 fixed:
   profile_device_memory: false
   jax_enable_x64: false
-  run_notes: "3BPA spectral scan"
+  run_notes: "3BPA EMA scan"
   config_path: "configs/3bpa.yml"  # path to base config file
   config_override:  # override entries from the base config file
-    model: "s2nequix"
+    model: "nequix"
 
 grid:
   config_override:
@@ -29,22 +29,9 @@ grid:
         - 1
         #- 2
         #- 3
-    num_eigenvectors:
+    ema_decay:
       type: choice
       options:
-        - 8
-        - 32
-
-    laplacian_cutoff_interval:
-      type: choice
-      options:
-        - [2.0, 10.0]
-        - [6.0, 14.0]
-        - [5.0, 7.0]
-
-    learning_rate:
-      type: choice
-      options:
-        - 0.01
-        - 0.03
-        - 0.003
+        - 0.99
+        - 0.999
+        - 0.9999
