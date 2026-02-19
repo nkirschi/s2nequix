@@ -13,6 +13,7 @@ valid_frac: 0.1
 laplacian_cutoff_interval: [2.0, 10.0]
 num_eigenvectors: 16
 atomic_numbers: [1, 6, 7, 8]  # 3BPA is C_12 ​H_12 ​N_2 ​O
+num_workers: 16
 
 # model specific
 model: "nequix"  # options: "nequix, s2nequix-v1"
@@ -48,6 +49,6 @@ force_weight: 10.0
 stress_weight: 0.0  # no stress data in 3BPA
 loss_type: "mae"
 log_every: 50  # batches, not epochs
-ema_decay: 0.995
+ema_decay: 0.999
 
 # to hyper-optimise: schedule, base lr, ema_decay, forces-to-energy ratio
