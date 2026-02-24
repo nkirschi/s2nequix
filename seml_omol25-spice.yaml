@@ -16,7 +16,7 @@ slurm:
 fixed:
   profile_device_memory: false
   jax_enable_x64: false
-  run_notes: "SPICE weight_decay scan"
+  run_notes: "test cheby layer"
   config_path: "configs/omol25.yml"  # path to base config file
   config_override:  # override entries from the base config file
     subset: "spice"
@@ -30,8 +30,15 @@ grid:  # remember to increase slurm time limit
         - 1
         #- 2
         #- 3
-    weight_decay:
+    model:
       type: choice
       options:
-        - 1e-1
-        - 1e-2
+        - "s2nequix-cheby"
+
+    cheby_degree:
+      type: choice
+      options:
+        - 3
+        - 10
+        - 20
+        - 50

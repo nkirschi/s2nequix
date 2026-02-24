@@ -248,7 +248,7 @@ def _train(config: dict, run_notes: str = ""):
         atomic_numbers=config["atomic_numbers"],
         cutoff=config["cutoff"],
         backend="jax",
-        load_spectral=(config["model"] != "nequix"),
+        load_spectral=(config["model"] == "s2nequix-evd"),
         laplacian_cutoff_interval=tuple(config["laplacian_cutoff_interval"])
         if "laplacian_cutoff_interval" in config
         else None,
@@ -362,6 +362,7 @@ def _train(config: dict, run_notes: str = ""):
             avg_n_neighbors=stats["avg_n_neighbors"],
             atom_energies=stats["atom_energies"],
             model_type=config["model"],
+            cheby_degree=config["cheby_degree"],
         )
     print_summary(model)
 

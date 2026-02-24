@@ -5,9 +5,7 @@ import e3nn_jax as e3nn
 import jax.numpy as jnp
 from e3nn_jax.utils import assert_equivariant
 
-from nequix.model import (
-    EquivariantSpectralLayer,
-)
+from nequix.model import EquivariantSpectralLayer
 
 
 config.update("jax_enable_x64", True)
@@ -32,7 +30,6 @@ def test_spectral_layer_initially_outputs_zero():
     layer = EquivariantSpectralLayer(
         input_irreps=input_irreps,
         output_irreps=output_irreps,
-        model_type="s2nequix",
         key=key,
     )
     out = layer(x, eigvals, eigvecs, batch_index)
@@ -57,7 +54,6 @@ def test_spectral_layer_is_equivariant():
     layer = EquivariantSpectralLayer(
         input_irreps=input_irreps,
         output_irreps=output_irreps,
-        model_type="s2nequix",
         key=key,
         init_last_layer_to_zero=False,  # note: zero initialisation would make the test trivial
     )
@@ -86,7 +82,6 @@ def test_spectral_layer_is_equivariant_with_dynamic_batching():
     layer = EquivariantSpectralLayer(
         input_irreps=input_irreps,
         output_irreps=output_irreps,
-        model_type="s2nequix",
         key=key,
         init_last_layer_to_zero=False,  # note: zero initialisation would make the test trivial
     )

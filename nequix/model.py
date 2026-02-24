@@ -210,7 +210,6 @@ class EquivariantSpectralLayer(eqx.Module):
     input_irreps: e3nn.Irreps = eqx.field(static=True)
     output_irreps: e3nn.Irreps = eqx.field(static=True)
     gate: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
-    model_type: str = eqx.field(static=True)
 
     e3nn_linear1: e3nn.equinox.Linear
     e3nn_linear2: e3nn.equinox.Linear
@@ -222,7 +221,6 @@ class EquivariantSpectralLayer(eqx.Module):
         key: jax.Array,
         input_irreps: e3nn.Irreps,
         output_irreps: e3nn.Irreps,
-        model_type: str,
         even_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
         odd_activation: Callable[[jax.Array], jax.Array] = jax.nn.tanh,
         gate_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
@@ -230,7 +228,6 @@ class EquivariantSpectralLayer(eqx.Module):
     ):
         self.input_irreps = input_irreps
         self.output_irreps = output_irreps
-        self.model_type = model_type
 
         # gate needs one extra scalar for each non-scalar
         num_nonscalar = input_irreps.filter(drop="0e + 0o").num_irreps  # type: ignore
@@ -304,6 +301,104 @@ class EquivariantSpectralLayer(eqx.Module):
         return e3nn.IrrepsArray(self.output_irreps, reconstructed)
 
 
+class EquivariantChebyshevLayer(eqx.Module):
+    input_irreps: e3nn.Irreps = eqx.field(static=True)
+    output_irreps: e3nn.Irreps = eqx.field(static=True)
+    gate: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
+    K: int = eqx.field(static=True)
+
+    e3nn_linear1: e3nn.equinox.Linear
+    e3nn_linear2: e3nn.equinox.Linear
+    filter_coeffs: jax.Array
+
+    def __init__(
+        self,
+        key: jax.Array,
+        input_irreps: e3nn.Irreps,
+        output_irreps: e3nn.Irreps,
+        even_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
+        odd_activation: Callable[[jax.Array], jax.Array] = jax.nn.tanh,
+        gate_activation: Callable[[jax.Array], jax.Array] = jax.nn.silu,
+        K: int = 10,
+        init_to_zero: bool = True,
+    ):
+        self.input_irreps = input_irreps
+        self.output_irreps = output_irreps
+        self.K = K
+
+        num_nonscalar = self.input_irreps.filter(drop="0e + 0o").num_irreps
+        gate_irreps = self.input_irreps + e3nn.Irreps(f"{num_nonscalar}x0e").simplify()
+
+        k1, k2, k3 = jax.random.split(key, 3)
+
+        self.e3nn_linear1 = e3nn.equinox.Linear(
+            irreps_in=self.input_irreps, irreps_out=gate_irreps, key=k2
+        )
+        self.e3nn_linear2 = e3nn.equinox.Linear(
+            irreps_in=input_irreps, irreps_out=self.output_irreps, key=k3
+        )
+        self.gate = functools.partial(
+            e3nn.gate,  # gate reduces gate_irreps back to input_irreps
+            even_act=even_activation,
+            odd_act=odd_activation,
+            even_gate_act=gate_activation,
+        )
+
+        # Initialize Chebyshev coefficients (K+1, num_channels)
+        num_channels = self.output_irreps.num_irreps
+        self.filter_coeffs = jnp.zeros((K + 1, num_channels))
+        if not init_to_zero:
+            # Start as Identity with symmetry-breaking noise
+            self.filter_coeffs = self.filter_coeffs.at[0, :].set(1.0)
+            self.filter_coeffs += jax.random.normal(k1, (K + 1, num_channels)) * 0.01
+
+    def __call__(
+        self,
+        node_feats: e3nn.IrrepsArray,
+        norm_weights: jax.Array,
+        senders: jax.Array,
+        receivers: jax.Array,
+    ) -> e3nn.IrrepsArray:
+        # 1. Equivariant pre-processing
+        x = self.e3nn_linear1(node_feats)
+        x = self.gate(x)
+        x = self.e3nn_linear2(x)
+        num_nodes = x.shape[0]
+
+        # 2. L_tilde Operator
+        def l_tilde_op(v: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
+            messages = v[senders] * norm_weights[:, None]
+            agg = e3nn.scatter_sum(messages, dst=receivers, output_size=num_nodes)
+            return -agg
+
+        # 3. Channel-wise coefficient applicator
+        def apply_coeffs(tensor: e3nn.IrrepsArray, k_idx: int) -> e3nn.IrrepsArray:
+            c_k = self.filter_coeffs[k_idx]
+            scalar_coeffs = e3nn.IrrepsArray(f"{self.output_irreps.num_irreps}x0e", c_k[None, :])
+            return tensor * scalar_coeffs
+
+        # 4. Chebyshev Recurrence Scan Body
+        def scan_body(carry, k_idx):
+            t_curr, t_prev, out = carry
+            t_next = l_tilde_op(t_curr) * 2.0 - t_prev
+            out_next = out + apply_coeffs(t_next, k_idx)
+            return (t_next, t_curr, out_next), None
+
+        # 5. Initialization and Execution
+        t0 = x
+        t1 = l_tilde_op(x)
+        out_init = apply_coeffs(t0, 0) + apply_coeffs(t1, 1)
+
+        if self.K >= 2:
+            scan_indices = jnp.arange(2, self.K + 1)
+            final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out_init), scan_indices)
+            _, _, final_out = final_carry
+        else:
+            final_out = out_init
+
+        return final_out
+
+
 class Nequix(eqx.Module):
     lmax: int = eqx.field(static=True)
     n_species: int = eqx.field(static=True)
@@ -312,7 +407,7 @@ class Nequix(eqx.Module):
     cutoff: float = eqx.field(static=True)
     shift: float = eqx.field(static=True)
     scale: float = eqx.field(static=True)
-    model_type: Optional[str] = eqx.field(static=True)
+    model_type: str = eqx.field(static=True)
 
     atom_energies: jax.Array
     spatial_layers: list[NequixConvolution]
@@ -338,7 +433,8 @@ class Nequix(eqx.Module):
         avg_n_neighbors: float = 1.0,
         atom_energies: Optional[Sequence[float]] = None,
         layer_norm: bool = False,
-        model_type: Optional[str] = "nequix",
+        model_type: str = "nequix",
+        cheby_degree: Optional[int] = None,
     ):
         self.lmax = lmax
         self.cutoff = cutoff
@@ -367,18 +463,36 @@ class Nequix(eqx.Module):
                 self.spectral_layers = None
             else:
                 subkey, subkey2 = jax.random.split(subkey, 2)
-                self.spectral_layers.append(
-                    EquivariantSpectralLayer(
-                        input_irreps=hidden_irreps
-                        if i < n_layers - 1
-                        else hidden_irreps.filter("0e"),
-                        output_irreps=hidden_irreps
-                        if i < n_layers - 1
-                        else hidden_irreps.filter("0e"),
-                        model_type=self.model_type,
-                        key=subkey2,
+                if self.model_type == "s2nequix-evd":
+                    self.spectral_layers.append(
+                        EquivariantSpectralLayer(
+                            input_irreps=hidden_irreps
+                            if i < n_layers - 1
+                            else hidden_irreps.filter("0e"),
+                            output_irreps=hidden_irreps
+                            if i < n_layers - 1
+                            else hidden_irreps.filter("0e"),
+                            key=subkey2,
+                        )
                     )
-                )
+                elif self.model_type == "s2nequix-cheby":
+                    assert cheby_degree is not None, (
+                        "cheby_degree must be specified for s2nequix-cheby"
+                    )
+                    self.spectral_layers.append(
+                        EquivariantChebyshevLayer(
+                            input_irreps=hidden_irreps
+                            if i < n_layers - 1
+                            else hidden_irreps.filter("0e"),
+                            output_irreps=hidden_irreps
+                            if i < n_layers - 1
+                            else hidden_irreps.filter("0e"),
+                            K=cheby_degree,
+                            key=subkey2,
+                        )
+                    )
+                else:
+                    raise ValueError(f"Unknown model type: {self.model_type}")
 
             self.spatial_layers.append(
                 NequixConvolution(
@@ -420,13 +534,9 @@ class Nequix(eqx.Module):
         square_r_norm = jnp.sum(displacements**2, axis=-1)
         r_norm = jnp.where(square_r_norm == 0.0, 0.0, jnp.sqrt(square_r_norm))
 
+        poly_cutoff = polynomial_cutoff(r_norm, self.cutoff, self.radial_polynomial_p)
         radial_basis = (
-            bessel_basis(r_norm, self.radial_basis_size, self.cutoff)
-            * polynomial_cutoff(
-                r_norm,
-                self.cutoff,
-                self.radial_polynomial_p,
-            )[:, None]
+            bessel_basis(r_norm, self.radial_basis_size, self.cutoff) * poly_cutoff[:, None]
         )
 
         # compute spherical harmonics of edge displacements
@@ -437,9 +547,21 @@ class Nequix(eqx.Module):
             normalization="component",
         )
 
+        # --- NEW: Compute Symmetrically Normalized Weights from p_cutoff ---
+        num_nodes = species.shape[0]
+        # Calculate node degrees using the same p_cutoff polynomial weights
+        degrees = jraph.segment_sum(poly_cutoff, receivers, num_segments=num_nodes)
+        degrees = jnp.where(
+            degrees < 1e-4, 1.0, degrees
+        )  # prevent division by zero for isolated (padding) nodes
+        # D^(-1/2) W D^(-1/2)
+        inv_sqrt_degrees = jax.lax.rsqrt(degrees)
+        norm_weights = poly_cutoff * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
+
         for i in range(len(self.spatial_layers)):
+            prev_features = features
             features = self.spatial_layers[i](
-                features,
+                prev_features,
                 species,
                 sh,
                 radial_basis,
@@ -447,12 +569,22 @@ class Nequix(eqx.Module):
                 receivers,
             )
             if self.spectral_layers is not None:
-                features += self.spectral_layers[i](
-                    features,
-                    eigvals,
-                    eigvecs,
-                    batch_index,
-                )
+                if self.model_type == "s2nequix-evd":
+                    features += self.spectral_layers[i](
+                        prev_features,
+                        eigvals,
+                        eigvecs,
+                        batch_index,
+                    )
+                elif self.model_type == "s2nequix-cheby":
+                    features += self.spectral_layers[i](
+                        prev_features,
+                        norm_weights,
+                        senders,
+                        receivers,
+                    )
+                else:
+                    raise ValueError(f"Unknown model type: {self.model_type}")
 
         node_energies = self.readout(features)
 
@@ -567,14 +699,14 @@ def weight_decay_mask(model):
     """weight decay mask (only apply decay to linear weights)"""
 
     def is_layer(x):
-        return isinstance(x, Linear) or isinstance(x, e3nn.equinox.Linear)
+        return isinstance(x, (Linear, e3nn.equinox.Linear, EquivariantChebyshevLayer))
 
     def set_mask(x):
         if isinstance(x, Linear):
             mask = jax.tree.map(lambda _: True, x)
             mask = eqx.tree_at(lambda m: m.bias, mask, False)
             return mask
-        elif isinstance(x, e3nn.equinox.Linear):
+        elif isinstance(x, (e3nn.equinox.Linear, EquivariantChebyshevLayer)):
             return jax.tree.map(lambda _: True, x)
         else:
             return jax.tree.map(lambda _: False, x)
@@ -614,6 +746,8 @@ def load_model(path: str) -> tuple[Nequix, dict]:
             shift=config["shift"],
             scale=config["scale"],
             avg_n_neighbors=config["avg_n_neighbors"],
+            model_type=config.get("model", "nequix"),
+            cheby_degree=config.get("cheby_degree", None),
             # NOTE: atom_energies will be in model weights
         )
         model = eqx.tree_deserialise_leaves(f, model)

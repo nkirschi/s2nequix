@@ -29,6 +29,7 @@ mlp_init_scale: 4.0
 index_weights: false
 layer_norm: true
 kernel: true
+cheby_degree: 5
 
 # training specific
 optimizer: "muon"
