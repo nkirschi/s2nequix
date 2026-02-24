@@ -28,20 +28,20 @@ def make_random_graph(key, num_nodes, num_edges, node_offset=0):
 @pytest.mark.quick
 def test_chebyshev_layer_initially_outputs_zero():
     n, e = 10, 20
-    k = 6
-    input_irreps = 7 * e3nn.Irreps("0e + 1o + 2e")
-    output_irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
+    degree = 6
+    irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
-    x = e3nn.IrrepsArray(input_irreps, jax.random.normal(key, (n, input_irreps.dim)))
+    x = e3nn.IrrepsArray(irreps, jax.random.normal(key, (n, irreps.dim)))
     senders, receivers, norm_weights = make_random_graph(key, n, e)
 
     # init_to_zero is True by default
     layer = EquivariantChebyshevLayer(
-        input_irreps=input_irreps,
-        output_irreps=output_irreps,
-        K=k,
+        irreps=irreps,
+        degree=degree,
         key=key,
+        pretransform_feats=False,
+        init_to_zero=True,
     )
 
     out = layer(x, norm_weights, senders, receivers)
@@ -53,21 +53,20 @@ def test_chebyshev_layer_initially_outputs_zero():
 @pytest.mark.quick
 def test_chebyshev_layer_is_equivariant():
     n, e = 10, 20
-    k = 6
-    input_irreps = 7 * e3nn.Irreps("0e + 1o + 2e")
-    output_irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
+    degree = 6
+    irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
     k_x, k_g = jax.random.split(key)
 
-    x = e3nn.IrrepsArray(input_irreps, jax.random.normal(k_x, (n, input_irreps.dim)))
+    x = e3nn.IrrepsArray(irreps, jax.random.normal(k_x, (n, irreps.dim)))
     senders, receivers, norm_weights = make_random_graph(k_g, n, e)
 
     layer = EquivariantChebyshevLayer(
-        input_irreps=input_irreps,
-        output_irreps=output_irreps,
-        K=k,
+        irreps=irreps,
+        degree=degree,
         key=key,
+        pretransform_feats=True,
         init_to_zero=False,  # note: zero initialisation would make the test trivial
     )
 
@@ -82,15 +81,14 @@ def test_chebyshev_layer_is_equivariant():
 def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
     ns = [10, 6, 8]  # number of nodes in each graph
     es = [24, 12, 18]  # number of edges in each graph
-    k = 6
-    input_irreps = 7 * e3nn.Irreps("0e + 1o + 2e")
-    output_irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
+    degree = 6
+    irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
     k_x, k_g = jax.random.split(key)
 
     x = e3nn.concatenate(
-        [e3nn.IrrepsArray(input_irreps, jax.random.normal(k_x, (n, input_irreps.dim))) for n in ns],
+        [e3nn.IrrepsArray(irreps, jax.random.normal(k_x, (n, irreps.dim))) for n in ns],
         axis=0,
     )
 
@@ -110,10 +108,10 @@ def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
     norm_weights = jnp.concatenate(weights_list, axis=0)
 
     layer = EquivariantChebyshevLayer(
-        input_irreps=input_irreps,
-        output_irreps=output_irreps,
-        K=k,
+        irreps=irreps,
+        degree=degree,
         key=key,
+        pretransform_feats=True,
         init_to_zero=False,  # note: zero initialisation would make the test trivial
     )
     function_to_test = lambda x: layer(x, norm_weights, senders, receivers)
@@ -124,12 +122,11 @@ def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
 @pytest.mark.quick
 def test_chebyshev_layer_exact_message_passing():
     n = 2
-    k = 2
-    input_irreps = e3nn.Irreps("2x0e + 1x1o")
-    output_irreps = e3nn.Irreps("2x0e + 1x1o")
+    degree = 2
+    irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
-    x = e3nn.IrrepsArray(input_irreps, jax.random.normal(key, (n, input_irreps.dim)))
+    x = e3nn.IrrepsArray(irreps, jax.random.normal(key, (n, irreps.dim)))
 
     # 2-node bidirectional graph with weight 1.0
     senders = jnp.array([0, 1])
@@ -137,25 +134,25 @@ def test_chebyshev_layer_exact_message_passing():
     norm_weights = jnp.array([1.0, 1.0])
 
     layer = EquivariantChebyshevLayer(
-        input_irreps=input_irreps,
-        output_irreps=output_irreps,
-        K=k,
+        irreps=irreps,
+        degree=degree,
         key=key,
+        pretransform_feats=False,
         init_to_zero=False,  # note: zero initialisation would make the test trivial
     )
-    num_channels = output_irreps.num_irreps
+    num_channels = irreps.num_irreps
 
     # Helper to hot-swap coefficients and run the layer
     def run_with_coeffs(c0, c1, c2):
         c = jnp.array([[c0] * num_channels, [c1] * num_channels, [c2] * num_channels])
-        temp_layer = eqx.tree_at(lambda m: m.filter_coeffs, layer, c)
+        temp_layer = eqx.tree_at(lambda m: m.channel_scale.filter_coeffs, layer, c)
         return temp_layer(x, norm_weights, senders, receivers)
 
     out_t0 = run_with_coeffs(1.0, 0.0, 0.0)
     out_t1 = run_with_coeffs(0.0, 1.0, 0.0)
     out_t2 = run_with_coeffs(0.0, 0.0, 1.0)
 
-    assert not jnp.allclose(out_t0.array, 0.0), "T0 output should not be zero"
+    assert jnp.allclose(out_t0.array, x.array, atol=1e-6)
 
     # Assert T1 correctly swapped and negated the node features
     assert jnp.allclose(out_t1.array, -out_t0.array[::-1], atol=1e-6)

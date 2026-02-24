@@ -210,6 +210,10 @@ def _train(config: dict, run_notes: str = ""):
         config["valid_path"] = None
     if "model" not in config:
         config["model"] = "nequix"
+    if "cheby_degree" not in config:
+        config["cheby_degree"] = None
+    if "pretransform_feats" not in config:
+        config["pretransform_feats"] = None
 
     wandb_init_kwargs = {"project": "nequix", "config": config, "notes": run_notes}
     using_checkpoint = "resume_from" in config and Path(config["resume_from"]).exists()
@@ -363,6 +367,7 @@ def _train(config: dict, run_notes: str = ""):
             atom_energies=stats["atom_energies"],
             model_type=config["model"],
             cheby_degree=config["cheby_degree"],
+            pretransform_feats=config["pretransform_feats"],
         )
     print_summary(model)
 

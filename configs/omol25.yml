@@ -30,6 +30,7 @@ index_weights: false
 layer_norm: true
 kernel: true
 cheby_degree: 5
+pretransform_feats: false 
 
 # training specific
 optimizer: "muon"
