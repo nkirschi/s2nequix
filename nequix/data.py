@@ -23,8 +23,8 @@ def preprocess_graph(
     targets: bool,
 ) -> dict:
     cell = complete_cell(atoms.cell)  # avoids singular cell
-    src, dst, shift = matscipy.neighbours.neighbour_list(
-        "ijS", positions=atoms.positions, cell=cell, pbc=atoms.pbc, cutoff=cutoff
+    src, dst, shift, dist = matscipy.neighbours.neighbour_list(
+        "ijSd", positions=atoms.positions, cell=cell, pbc=atoms.pbc, cutoff=cutoff
     )
     graph_dict = {
         "n_node": np.array([len(atoms)]).astype(np.int32),
@@ -34,6 +34,7 @@ def preprocess_graph(
         "species": np.array([atom_indices[n] for n in atoms.get_atomic_numbers()]).astype(np.int32),
         "positions": atoms.positions.astype(np.float32),
         "shifts": shift.astype(np.float32),
+        "distances": dist.astype(np.float32),
         "cell": atoms.cell.astype(np.float32) if atoms.pbc.all() else None,
     }
     if targets:
@@ -106,7 +107,10 @@ def dict_to_graphstuple(graph_dict: dict):
             "forces": graph_dict["forces"] if "forces" in graph_dict else None,
             "eigvecs": graph_dict["eigvecs"] if "eigvecs" in graph_dict else None,
         },
-        edges={"shifts": graph_dict["shifts"]},
+        edges={
+            "shifts": graph_dict["shifts"],
+            "distances": graph_dict["distances"],
+        },
         senders=graph_dict["senders"],
         receivers=graph_dict["receivers"],
         globals={
@@ -492,7 +496,7 @@ def average_atom_energies(dataset: Dataset) -> list[float]:
     return E0s
 
 
-def dataset_stats(dataset: Dataset, atom_energies: list[float], num_workers: int = 16) -> dict:
+def dataset_stats(dataset: Dataset, atom_energies: list[float], spatial_cutoff: float, num_workers: int = 16) -> dict:
     """Compute the statistics of the dataset."""
     atom_energies = np.array(atom_energies)
     num_graphs = len(dataset)
@@ -539,7 +543,8 @@ def dataset_stats(dataset: Dataset, atom_energies: list[float], num_workers: int
             sum_energy_per_atom += energy_per_atom
             sum_force_sq += float(np.sum(graph.nodes["forces"] ** 2))
             num_force_components += graph.nodes["forces"].size
-            sum_neighbors += n_edge / n_node
+            n_spatial_edges = int(np.sum(graph.edges["distances"] <= spatial_cutoff))
+            sum_neighbors += n_spatial_edges / n_node
     finally:
         for _ in loader.workers:
             loader.index_queue.put(None)

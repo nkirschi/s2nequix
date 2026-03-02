@@ -208,6 +208,10 @@ def _train(config: dict, run_notes: str = ""):
         config["num_workers"] = 16
     if "valid_path" not in config:
         config["valid_path"] = None
+    if "spatial_cutoff" not in config:
+        config["spatial_cutoff"] = config["cutoff"]
+    if "spectral_cutoff" not in config:
+        config["spectral_cutoff"] = config["spatial_cutoff"]
     if "model" not in config:
         config["model"] = "nequix"
     if "cheby_degree" not in config:
@@ -247,10 +251,14 @@ def _train(config: dict, run_notes: str = ""):
     os.makedirs(checkpoint_path, exist_ok=True)
 
     print(f"loading training dataset from {config['train_path']}...")
+    super_cutoff = max(config["spatial_cutoff"], config["spectral_cutoff"])
+    print(
+        f"super_cutoff = {super_cutoff} = max({config['spatial_cutoff']}, {config['spectral_cutoff']})"
+    )
     train_dataset = AseDBDataset(
         file_path=config["train_path"],
         atomic_numbers=config["atomic_numbers"],
-        cutoff=config["cutoff"],
+        cutoff=super_cutoff,
         backend="jax",
         load_spectral=(config["model"] == "s2nequix-evd"),
         laplacian_cutoff_interval=tuple(config["laplacian_cutoff_interval"])
@@ -264,7 +272,7 @@ def _train(config: dict, run_notes: str = ""):
         val_dataset = AseDBDataset(
             file_path=config["valid_path"],
             atomic_numbers=config["atomic_numbers"],
-            cutoff=config["cutoff"],
+            cutoff=super_cutoff,
             backend="jax",
         )
     else:
@@ -309,7 +317,12 @@ def _train(config: dict, run_notes: str = ""):
     else:
         print("computing dataset statistics ...")
         atom_energies = average_atom_energies(train_dataset)
-        stats = dataset_stats(train_dataset, atom_energies, num_workers=config["num_workers"])
+        stats = dataset_stats(
+            train_dataset,
+            atom_energies,
+            config["spatial_cutoff"],
+            num_workers=config["num_workers"],
+        )
         stats["atom_energies"] = atom_energies
         onp.savez(stats_path, **stats)
 
@@ -352,7 +365,8 @@ def _train(config: dict, run_notes: str = ""):
             n_species=len(config["atomic_numbers"]),
             hidden_irreps=config["hidden_irreps"],
             lmax=config["lmax"],
-            cutoff=config["cutoff"],
+            spatial_cutoff=config["spatial_cutoff"],
+            spectral_cutoff=config["spectral_cutoff"],
             n_layers=config["n_layers"],
             radial_basis_size=config["radial_basis_size"],
             radial_mlp_size=config["radial_mlp_size"],

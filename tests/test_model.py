@@ -119,7 +119,7 @@ def test_model_save_load():
     model = Nequix(
         key,
         n_species=len(config["atomic_numbers"]),
-        cutoff=config["cutoff"],
+        spatial_cutoff=config["cutoff"],
         lmax=config["lmax"],
         hidden_irreps=config["hidden_irreps"],
         n_layers=config["n_layers"],
@@ -145,7 +145,7 @@ def test_model_save_load():
         save_model(tmp_file.name, model, config)
         loaded_model, _ = load_model(tmp_file.name)
         assert model.lmax == loaded_model.lmax
-        assert model.cutoff == loaded_model.cutoff
+        assert model.spatial_cutoff == loaded_model.spatial_cutoff
         assert model.n_species == loaded_model.n_species
         assert model.radial_basis_size == loaded_model.radial_basis_size
         assert model.radial_polynomial_p == loaded_model.radial_polynomial_p
@@ -177,11 +177,11 @@ def test_weight_decay_mask():
     )
     mask = weight_decay_mask(model)
     # should be weight decay on e3nn linear layers and normal linear weights
-    assert all(mask.layers[0].linear_1._weights.values())
-    assert mask.layers[0].radial_mlp.layers[0].weights
+    assert all(mask.spatial_layers[0].linear_1._weights.values())
+    assert mask.spatial_layers[0].radial_mlp.layers[0].weights
 
     # no weight decay on atom energies, biases, or layer norms
     assert not mask.atom_energies
-    assert not mask.layers[0].radial_mlp.layers[0].bias
-    assert not any(mask.layers[0].layer_norm.affine_weight)
-    assert not mask.layers[0].layer_norm.affine_bias
+    assert not mask.spatial_layers[0].radial_mlp.layers[0].bias
+    assert not any(mask.spatial_layers[0].layer_norm.affine_weight)
+    assert not mask.spatial_layers[0].layer_norm.affine_bias

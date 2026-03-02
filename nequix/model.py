@@ -139,7 +139,8 @@ class EquivariantMLP(eqx.Module):
         return x
 
 
-class ChannelwiseScale(eqx.Module):
+# TODO: might incorporate this back into cheby layer again
+class EquivariantChannelScaler(eqx.Module):
     irreps: e3nn.Irreps = eqx.field(static=True)
     filter_coeffs: jax.Array
 
@@ -358,7 +359,7 @@ class EquivariantChebyshevLayer(eqx.Module):
     irreps: e3nn.Irreps = eqx.field(static=True)
     degree: int = eqx.field(static=True)
 
-    channel_scale: ChannelwiseScale
+    channel_scale: EquivariantChannelScaler
     pretransform_mlp: Optional[EquivariantMLP]
 
     def __init__(
@@ -384,7 +385,7 @@ class EquivariantChebyshevLayer(eqx.Module):
             self.pretransform_mlp = None
 
         # Instantiate the new standalone scaler
-        self.channel_scale = ChannelwiseScale(
+        self.channel_scale = EquivariantChannelScaler(
             key=k2, irreps=self.irreps, degree=self.degree, init_to_zero=init_to_zero
         )
 
@@ -430,7 +431,8 @@ class Nequix(eqx.Module):
     n_species: int = eqx.field(static=True)
     radial_basis_size: int = eqx.field(static=True)
     radial_polynomial_p: float = eqx.field(static=True)
-    cutoff: float = eqx.field(static=True)
+    spatial_cutoff: float = eqx.field(static=True)
+    spectral_cutoff: float = eqx.field(static=True)
     shift: float = eqx.field(static=True)
     scale: float = eqx.field(static=True)
     model_type: str = eqx.field(static=True)
@@ -445,7 +447,8 @@ class Nequix(eqx.Module):
         key,
         n_species,
         lmax: int = 3,
-        cutoff: float = 5.0,
+        spatial_cutoff: float = 5.0,
+        spectral_cutoff: float = 10.0,
         hidden_irreps: str = "128x0e + 128x1o + 128x2e + 128x3o",
         n_layers: int = 5,
         radial_basis_size: int = 8,
@@ -464,7 +467,8 @@ class Nequix(eqx.Module):
         pretransform_feats: bool = False,
     ):
         self.lmax = lmax
-        self.cutoff = cutoff
+        self.spatial_cutoff = spatial_cutoff
+        self.spectral_cutoff = spectral_cutoff
         self.n_species = n_species
         self.radial_basis_size = radial_basis_size
         self.radial_polynomial_p = radial_polynomial_p
@@ -554,9 +558,12 @@ class Nequix(eqx.Module):
         square_r_norm = jnp.sum(displacements**2, axis=-1)
         r_norm = jnp.where(square_r_norm == 0.0, 0.0, jnp.sqrt(square_r_norm))
 
-        poly_cutoff = polynomial_cutoff(r_norm, self.cutoff, self.radial_polynomial_p)
+        poly_cutoff_spatial = polynomial_cutoff(
+            r_norm, self.spatial_cutoff, self.radial_polynomial_p
+        )
         radial_basis = (
-            bessel_basis(r_norm, self.radial_basis_size, self.cutoff) * poly_cutoff[:, None]
+            bessel_basis(r_norm, self.radial_basis_size, self.spatial_cutoff)
+            * poly_cutoff_spatial[:, None]
         )
 
         # compute spherical harmonics of edge displacements
@@ -567,16 +574,15 @@ class Nequix(eqx.Module):
             normalization="component",
         )
 
-        # --- NEW: Compute Symmetrically Normalized Weights from p_cutoff ---
+        # compute symmetrically normalized weights for spectral layers: D^(-1/2) W D^(-1/2)
+        poly_cutoff_spectral = polynomial_cutoff(
+            r_norm, self.spectral_cutoff, self.radial_polynomial_p
+        )
         num_nodes = species.shape[0]
-        # Calculate node degrees using the same p_cutoff polynomial weights
-        degrees = jraph.segment_sum(poly_cutoff, receivers, num_segments=num_nodes)
-        degrees = jnp.where(
-            degrees < 1e-4, 1.0, degrees
-        )  # prevent division by zero for isolated (padding) nodes
-        # D^(-1/2) W D^(-1/2)
+        degrees = jraph.segment_sum(poly_cutoff_spectral, receivers, num_segments=num_nodes)
+        degrees = jnp.where(degrees < 1e-4, 1.0, degrees)  # prevent div by zero for isolated nodes
         inv_sqrt_degrees = jax.lax.rsqrt(degrees)
-        norm_weights = poly_cutoff * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
+        norm_weights = poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
 
         for i in range(len(self.spatial_layers)):
             features = self.spatial_layers[i](
@@ -718,14 +724,14 @@ def weight_decay_mask(model):
     """weight decay mask (only apply decay to linear weights)"""
 
     def is_layer(x):
-        return isinstance(x, (Linear, e3nn.equinox.Linear, ChannelwiseScale))
+        return isinstance(x, (Linear, e3nn.equinox.Linear, EquivariantChannelScaler))
 
     def set_mask(x):
         if isinstance(x, Linear):
             mask = jax.tree.map(lambda _: True, x)
             mask = eqx.tree_at(lambda m: m.bias, mask, False)
             return mask
-        elif isinstance(x, (e3nn.equinox.Linear, ChannelwiseScale)):
+        elif isinstance(x, (e3nn.equinox.Linear, EquivariantChannelScaler)):
             return jax.tree_util.tree_map(lambda _: True, x)
         else:
             return jax.tree.map(lambda _: False, x)
@@ -750,7 +756,8 @@ def load_model(path: str) -> tuple[Nequix, dict]:
             n_species=len(config["atomic_numbers"]),
             hidden_irreps=config["hidden_irreps"],
             lmax=config["lmax"],
-            cutoff=config["cutoff"],
+            spatial_cutoff=config.get("spatial_cutoff", config["cutoff"]),
+            spectral_cutoff=config.get("spectral_cutoff", config["cutoff"]),
             n_layers=config["n_layers"],
             radial_basis_size=config["radial_basis_size"],
             radial_mlp_size=config["radial_mlp_size"],
