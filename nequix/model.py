@@ -139,33 +139,6 @@ class EquivariantMLP(eqx.Module):
         return x
 
 
-# TODO: might incorporate this back into cheby layer again
-class EquivariantChannelScaler(eqx.Module):
-    irreps: e3nn.Irreps = eqx.field(static=True)
-    filter_coeffs: jax.Array
-
-    def __init__(
-        self,
-        key: jax.Array,
-        irreps: e3nn.Irreps,
-        degree: int,
-        init_to_zero: bool,
-    ):
-        self.irreps = e3nn.Irreps(irreps)
-        self.filter_coeffs = jnp.zeros((degree + 1, self.irreps.num_irreps))
-        if not init_to_zero:
-            # Start as Identity with symmetry-breaking noise
-            self.filter_coeffs = self.filter_coeffs.at[0, :].set(1.0)
-            self.filter_coeffs += (
-                jax.random.normal(key, (degree + 1, self.irreps.num_irreps)) * 0.01
-            )
-
-    def __call__(self, tensor: e3nn.IrrepsArray, k_idx: int) -> e3nn.IrrepsArray:
-        c_k = self.filter_coeffs[k_idx]
-        scalar_coeffs = e3nn.IrrepsArray(f"{self.irreps.num_irreps}x0e", c_k[None, :])
-        return tensor * scalar_coeffs
-
-
 class NequixConvolution(eqx.Module):
     output_irreps: e3nn.Irreps = eqx.field(static=True)
     index_weights: bool = eqx.field(static=True)
@@ -358,21 +331,31 @@ class EquivariantSpectralLayer(eqx.Module):
 class EquivariantChebyshevLayer(eqx.Module):
     irreps: e3nn.Irreps = eqx.field(static=True)
     degree: int = eqx.field(static=True)
+    num_cutoffs: int = eqx.field(static=True)
+    expand_indices: tuple[int, ...] = eqx.field(static=True)
 
-    channel_scale: EquivariantChannelScaler
+    filter_coeffs: jax.Array
+    mixing_weights: jax.Array
     pretransform_mlp: Optional[EquivariantMLP]
 
     def __init__(
         self,
         key: jax.Array,
         irreps: e3nn.Irreps,
-        degree: int = 10,
+        degree: int,
+        num_cutoffs: int,
         pretransform_feats: bool = False,
         init_to_zero: bool = True,
     ):
-        self.irreps = irreps
+        self.irreps = e3nn.Irreps(irreps)
         self.degree = degree
+        self.num_cutoffs = num_cutoffs
 
+        repeats = [ir.dim for mul, ir in self.irreps for _ in range(mul)]
+        indices = []
+        for i, r in enumerate(repeats):
+            indices.extend([i] * r)
+        self.expand_indices = tuple(indices)
         k1, k2 = jax.random.split(key, 2)
 
         if pretransform_feats:
@@ -384,46 +367,84 @@ class EquivariantChebyshevLayer(eqx.Module):
         else:
             self.pretransform_mlp = None
 
-        # Instantiate the new standalone scaler
-        self.channel_scale = EquivariantChannelScaler(
-            key=k2, irreps=self.irreps, degree=self.degree, init_to_zero=init_to_zero
-        )
+        num_channels = self.irreps.num_irreps
+
+        # Filter coefficients for the Chebyshev polynomials
+        # Shape: (num_cutoffs, degree + 1, num_channels)
+        self.filter_coeffs = jnp.zeros((self.num_cutoffs, degree + 1, num_channels))
+        if not init_to_zero:
+            # Set T_0 to identity across all parallel filters
+            self.filter_coeffs = self.filter_coeffs.at[:, 0, :].set(1.0)
+            self.filter_coeffs += (
+                jax.random.normal(k2, (self.num_cutoffs, degree + 1, num_channels)) * 0.01
+            )
+
+        # Mixing weights to combine the parallel scale outputs
+        # Shape: (num_cutoffs, num_channels)
+        # Initialized to compute a simple average initially (1 / M)
+        self.mixing_weights = jnp.ones((self.num_cutoffs, num_channels)) / self.num_cutoffs
 
     def __call__(
         self,
         node_feats: e3nn.IrrepsArray,
-        norm_weights: jax.Array,
+        norm_weights_multi: jax.Array,  # Shape: (num_cutoffs, num_edges)
         senders: jax.Array,
         receivers: jax.Array,
     ) -> e3nn.IrrepsArray:
-        # 1. Optional equivariant pre-transformation
         if self.pretransform_mlp is not None:
             node_feats = self.pretransform_mlp(node_feats)
 
-        # 2. L_tilde Operator
-        def l_tilde_op(v: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
-            messages = v[senders] * norm_weights[:, None]
-            agg = e3nn.scatter_sum(messages, dst=receivers, output_size=node_feats.shape[0])
-            return -agg
+        # 1. Strip e3nn abstractions: operate strictly on flat arrays for XLA fusion
+        x_raw = node_feats.array
+        num_nodes = x_raw.shape[0]
+        idx_array = jnp.array(self.expand_indices)
 
-        # 3. Chebyshev Recurrence Scan Body
-        def scan_body(carry, k_idx):
-            t_curr, t_prev, out = carry
-            t_next = l_tilde_op(t_curr) * 2.0 - t_prev
-            out_next = out + self.channel_scale(t_next, k_idx)  # <-- Clean method call
-            return (t_next, t_curr, out_next), None
+        # 2. Define the logic for a SINGLE cutoff
+        def single_cutoff_chebyshev(norm_weights: jax.Array, coeffs: jax.Array):
+            def l_tilde_op(v_raw: jax.Array) -> jax.Array:
+                messages = v_raw[senders] * norm_weights[:, None]
+                return -jraph.segment_sum(messages, receivers, num_segments=num_nodes)
 
-        # 4. Initialization and Execution
-        t0 = node_feats
-        t1 = l_tilde_op(node_feats)
-        out = self.channel_scale(t0, 0) + self.channel_scale(t1, 1)
+            def apply_filter(v_raw: jax.Array, k_idx: int) -> jax.Array:
+                # Expand (num_channels,) to (total_dim,) dynamically inside the forward pass
+                c_k_expanded = coeffs[k_idx][idx_array]
+                return v_raw * c_k_expanded
 
-        if self.degree >= 2:
-            scan_indices = jnp.arange(2, self.degree + 1)
-            final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out), scan_indices)
-            _, _, out = final_carry
+            # Initialization for Chebyshev recurrence
+            t0 = x_raw
+            t1 = l_tilde_op(x_raw)
+            out_acc = apply_filter(t0, 0) + apply_filter(t1, 1)
 
-        return out
+            def scan_body(carry, k_idx):
+                t_curr, t_prev, out = carry
+                t_next = l_tilde_op(t_curr) * 2.0 - t_prev
+                out_next = out + apply_filter(t_next, k_idx)
+                return (t_next, t_curr, out_next), None
+
+            if self.degree >= 2:
+                scan_indices = jnp.arange(2, self.degree + 1)
+                final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out_acc), scan_indices)
+                _, _, out_acc = final_carry
+
+            return out_acc
+
+        # 3. VMAP across the cutoff dimension
+        # Axes: 0 maps over norm_weights_multi (M, E), 0 maps over filter_coeffs (M, K, C)
+        # Output multi_scale_out shape: (num_cutoffs, num_nodes, total_dim)
+        multi_scale_out = jax.vmap(single_cutoff_chebyshev, in_axes=(0, 0))(
+            norm_weights_multi, self.filter_coeffs
+        )
+
+        # 4. Expand mixing weights across the spherical harmonic dimensions
+        # Shape goes from (num_cutoffs, num_channels) -> (num_cutoffs, total_dim)
+        expanded_mixing = self.mixing_weights[:, idx_array]
+
+        # 5. Broadcast, Multiply, and Sum
+        # Broadcast expanded_mixing over the num_nodes dimension and sum over cutoffs
+        final_out = jnp.sum(multi_scale_out * expanded_mixing[:, None, :], axis=0)
+
+        # 6. Re-wrap into IrrepsArray exactly once
+        return e3nn.IrrepsArray(self.irreps, final_out)
 
 
 class Nequix(eqx.Module):
@@ -432,7 +453,7 @@ class Nequix(eqx.Module):
     radial_basis_size: int = eqx.field(static=True)
     radial_polynomial_p: float = eqx.field(static=True)
     spatial_cutoff: float = eqx.field(static=True)
-    spectral_cutoff: float = eqx.field(static=True)
+    spectral_cutoffs: tuple[float, ...] = eqx.field(static=True)
     shift: float = eqx.field(static=True)
     scale: float = eqx.field(static=True)
     model_type: str = eqx.field(static=True)
@@ -448,7 +469,7 @@ class Nequix(eqx.Module):
         n_species,
         lmax: int = 3,
         spatial_cutoff: float = 5.0,
-        spectral_cutoff: float = 10.0,
+        spectral_cutoffs: tuple[float, ...] = (10.0,),
         hidden_irreps: str = "128x0e + 128x1o + 128x2e + 128x3o",
         n_layers: int = 5,
         radial_basis_size: int = 8,
@@ -468,7 +489,7 @@ class Nequix(eqx.Module):
     ):
         self.lmax = lmax
         self.spatial_cutoff = spatial_cutoff
-        self.spectral_cutoff = spectral_cutoff
+        self.spectral_cutoffs = tuple(spectral_cutoffs)
         self.n_species = n_species
         self.radial_basis_size = radial_basis_size
         self.radial_polynomial_p = radial_polynomial_p
@@ -511,6 +532,7 @@ class Nequix(eqx.Module):
                         EquivariantChebyshevLayer(
                             irreps=hidden_irreps if i < n_layers - 1 else output_irreps,
                             degree=cheby_degree,
+                            num_cutoffs=len(self.spectral_cutoffs),
                             key=s2subkey,
                             pretransform_feats=pretransform_feats,
                         )
@@ -575,16 +597,17 @@ class Nequix(eqx.Module):
         )
 
         # compute symmetrically normalized weights for spectral layers: D^(-1/2) W D^(-1/2)
-        poly_cutoff_spectral = polynomial_cutoff(
-            r_norm, self.spectral_cutoff, self.radial_polynomial_p
-        )
         num_nodes = species.shape[0]
-        degrees = jraph.segment_sum(poly_cutoff_spectral, receivers, num_segments=num_nodes)
-        degrees = jnp.where(degrees < 1e-4, 1.0, degrees)  # prevent div by zero for isolated nodes
-        inv_sqrt_degrees = jax.lax.rsqrt(degrees)
-        norm_weights = (
-            poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
-        )
+
+        def compute_single_norm_weights(c):
+            poly_cutoff_spectral = polynomial_cutoff(r_norm, c, self.radial_polynomial_p)
+            degrees = jraph.segment_sum(poly_cutoff_spectral, receivers, num_segments=num_nodes)
+            degrees = jnp.where(degrees < 1e-4, 1.0, degrees)  # prevent div by 0 for isolated nodes
+            inv_sqrt_degrees = jax.lax.rsqrt(degrees)
+            return poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
+
+        # vmap over the static tuple of cutoffs
+        norm_weights = jax.vmap(compute_single_norm_weights)(jnp.array(self.spectral_cutoffs))
 
         for i in range(len(self.spatial_layers)):
             features = self.spatial_layers[i](
@@ -740,7 +763,7 @@ def load_model(path: str) -> tuple[Nequix, dict]:
             hidden_irreps=config["hidden_irreps"],
             lmax=config["lmax"],
             spatial_cutoff=config.get("spatial_cutoff", config["cutoff"]),
-            spectral_cutoff=config.get("spectral_cutoff", config["cutoff"]),
+            spectral_cutoffs=config.get("spectral_cutoffs", (config["cutoff"],)),
             n_layers=config["n_layers"],
             radial_basis_size=config["radial_basis_size"],
             radial_mlp_size=config["radial_mlp_size"],

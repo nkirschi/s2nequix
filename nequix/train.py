@@ -28,7 +28,7 @@ from nequix.data import (
     prefetch,
 )
 from nequix.early_stopping import EarlyStopping
-from nequix.model import Nequix, save_model, weight_decay_mask
+from nequix.model import Nequix, save_model
 
 
 @eqx.filter_jit
@@ -210,8 +210,8 @@ def _train(config: dict, run_notes: str = ""):
         config["valid_path"] = None
     if "spatial_cutoff" not in config:
         config["spatial_cutoff"] = config["cutoff"]
-    if "spectral_cutoff" not in config:
-        config["spectral_cutoff"] = config["spatial_cutoff"]
+    if "spectral_cutoffs" not in config:
+        config["spectral_cutoffs"] = (config["spatial_cutoff"],)
     if "weight_decay_cheby" not in config:
         config["weight_decay_cheby"] = config["weight_decay"]
     if "model" not in config:
@@ -253,9 +253,9 @@ def _train(config: dict, run_notes: str = ""):
     os.makedirs(checkpoint_path, exist_ok=True)
 
     print(f"loading training dataset from {config['train_path']}...")
-    super_cutoff = max(config["spatial_cutoff"], config["spectral_cutoff"])
+    super_cutoff = max(config["spatial_cutoff"], max(config["spectral_cutoffs"]))
     print(
-        f"super_cutoff = {super_cutoff} = max({config['spatial_cutoff']}, {config['spectral_cutoff']})"
+        f"super_cutoff = {super_cutoff} = max({config['spatial_cutoff']}, {max(config['spectral_cutoffs'])})"
     )
     train_dataset = AseDBDataset(
         file_path=config["train_path"],
@@ -306,6 +306,8 @@ def _train(config: dict, run_notes: str = ""):
         train_mask &= (train_meta["natoms"] >= min_n) & (train_meta["natoms"] <= max_n)
         val_mask &= (val_meta["natoms"] >= min_n) & (val_meta["natoms"] <= max_n)
         stats_string += f"_{min_n}-{max_n}atoms"
+
+    stats_string += f"_cutoffs{super_cutoff:.1f}-{config['spatial_cutoff']:.1f}"
 
     train_idx = onp.argwhere(train_mask).squeeze()
     val_idx = onp.argwhere(val_mask).squeeze()
@@ -368,7 +370,7 @@ def _train(config: dict, run_notes: str = ""):
             hidden_irreps=config["hidden_irreps"],
             lmax=config["lmax"],
             spatial_cutoff=config["spatial_cutoff"],
-            spectral_cutoff=config["spectral_cutoff"],
+            spectral_cutoffs=config["spectral_cutoffs"],
             n_layers=config["n_layers"],
             radial_basis_size=config["radial_basis_size"],
             radial_mlp_size=config["radial_mlp_size"],
@@ -432,10 +434,10 @@ def _train(config: dict, run_notes: str = ""):
                 return "ignore"
             name = getattr(path[-1], "name", "")
             match name:
-                case "weights":
-                    return "weights"
+                case "weights" | "mixing_weights":
+                    return "decay_regular"
                 case "filter_coeffs":
-                    return "filter_coeffs"
+                    return "decay_special"
                 case _:
                     return "ignore"
 
@@ -460,8 +462,8 @@ def _train(config: dict, run_notes: str = ""):
             optax.clip_by_global_norm(config["grad_clip_norm"]),
             optax.multi_transform(
                 {
-                    "weights": build_opt(config["weight_decay"]),
-                    "filter_coeffs": build_opt(config["weight_decay_cheby"]),
+                    "decay_regular": build_opt(config["weight_decay"]),
+                    "decay_special": build_opt(config["weight_decay_cheby"]),
                     "ignore": build_opt(0.0),
                 },
                 param_labels=label_fn,
