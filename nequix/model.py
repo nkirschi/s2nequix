@@ -582,7 +582,9 @@ class Nequix(eqx.Module):
         degrees = jraph.segment_sum(poly_cutoff_spectral, receivers, num_segments=num_nodes)
         degrees = jnp.where(degrees < 1e-4, 1.0, degrees)  # prevent div by zero for isolated nodes
         inv_sqrt_degrees = jax.lax.rsqrt(degrees)
-        norm_weights = poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
+        norm_weights = (
+            poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
+        )
 
         for i in range(len(self.spatial_layers)):
             features = self.spatial_layers[i](
@@ -718,25 +720,6 @@ def node_graph_idx(data: jraph.GraphsTuple) -> jnp.ndarray:
     graph_idx = jnp.arange(n_graph)
     node_gr_idx = jnp.repeat(graph_idx, data.n_node, axis=0, total_repeat_length=sum_n_node)
     return node_gr_idx
-
-
-def weight_decay_mask(model):
-    """weight decay mask (only apply decay to linear weights)"""
-
-    def is_layer(x):
-        return isinstance(x, (Linear, e3nn.equinox.Linear, EquivariantChannelScaler))
-
-    def set_mask(x):
-        if isinstance(x, Linear):
-            mask = jax.tree.map(lambda _: True, x)
-            mask = eqx.tree_at(lambda m: m.bias, mask, False)
-            return mask
-        elif isinstance(x, (e3nn.equinox.Linear, EquivariantChannelScaler)):
-            return jax.tree_util.tree_map(lambda _: True, x)
-        else:
-            return jax.tree.map(lambda _: False, x)
-
-    return jax.tree.map(set_mask, model, is_leaf=is_layer)
 
 
 def save_model(path: str, model: eqx.Module, config: dict):

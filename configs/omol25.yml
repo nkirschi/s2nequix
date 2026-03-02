@@ -43,6 +43,7 @@ plateau_patience: 3
 plateau_factor: 0.8
 grad_clip_norm: 100.0
 weight_decay: 1.0e-3
+weight_decay_cheby: 1.0e-2
 batch_size: 32  # NOTE: per device
 n_epochs: 1_000_000_000  # effective infinity (early stopping)
 subepoch_length: 10_000  # number of batches per subepoch. set to null or remove for normal epoch-based training

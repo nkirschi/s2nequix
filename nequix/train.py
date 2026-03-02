@@ -212,6 +212,8 @@ def _train(config: dict, run_notes: str = ""):
         config["spatial_cutoff"] = config["cutoff"]
     if "spectral_cutoff" not in config:
         config["spectral_cutoff"] = config["spatial_cutoff"]
+    if "weight_decay_cheby" not in config:
+        config["weight_decay_cheby"] = config["weight_decay"]
     if "model" not in config:
         config["model"] = "nequix"
     if "cheby_degree" not in config:
@@ -424,25 +426,46 @@ def _train(config: dict, run_notes: str = ""):
     )
 
     if not using_checkpoint:
-        match config["optimizer"]:
-            case "adamw":
-                optim = optax.adamw(
-                    learning_rate=schedule,
-                    weight_decay=config["weight_decay"],
-                    mask=weight_decay_mask(model),
-                )
-            case "muon":
-                optim = optax.contrib.muon(
-                    learning_rate=schedule,
-                    weight_decay=config["weight_decay"] if config["weight_decay"] != 0.0 else None,
-                    weight_decay_mask=weight_decay_mask(model),
-                )
-            case _:
-                raise ValueError(f"optimizer {config['optimizer']} not supported")
 
+        def get_weight_decay_label(path, leaf):
+            if not eqx.is_inexact_array(leaf) or not path:
+                return "ignore"
+            name = getattr(path[-1], "name", "")
+            match name:
+                case "weights":
+                    return "weights"
+                case "filter_coeffs":
+                    return "filter_coeffs"
+                case _:
+                    return "ignore"
+
+        def build_opt(weight_decay):
+            match config["optimizer"]:
+                case "adamw":
+                    return optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
+                case "muon":
+                    return optax.contrib.muon(learning_rate=schedule, weight_decay=weight_decay)
+                case _:
+                    raise ValueError(f"optimizer {config['optimizer']} not supported")
+
+        label_fn = lambda params: jax.tree_util.tree_map_with_path(get_weight_decay_label, params)
+        param_labels = label_fn(model)
+        print("\n---------- Weight Decay ----------")
+        for path, label in jax.tree_util.tree_leaves_with_path(param_labels):
+            if label != "ignore":
+                path_str = "".join(str(p) for p in path)
+                print(f"[{label.upper()}] {path_str}")
+        print("----------------------------------\n")
         optim = optax.chain(
             optax.clip_by_global_norm(config["grad_clip_norm"]),
-            optim,
+            optax.multi_transform(
+                {
+                    "weights": build_opt(config["weight_decay"]),
+                    "filter_coeffs": build_opt(config["weight_decay_cheby"]),
+                    "ignore": build_opt(0.0),
+                },
+                param_labels=label_fn,
+            ),
         )
         opt_state = optim.init(eqx.filter(model, eqx.is_array))
         model = jax.device_put_replicated(model, list(jax.devices()))
