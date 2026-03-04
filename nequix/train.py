@@ -28,7 +28,7 @@ from nequix.data import (
     prefetch,
 )
 from nequix.early_stopping import EarlyStopping
-from nequix.model import Nequix, save_model
+from nequix.model import Nequix, save_model, get_param_labels
 
 
 @eqx.filter_jit
@@ -429,18 +429,6 @@ def _train(config: dict, run_notes: str = ""):
 
     if not using_checkpoint:
 
-        def get_weight_decay_label(path, leaf):
-            if not eqx.is_inexact_array(leaf) or not path:
-                return "ignore"
-            name = getattr(path[-1], "name", "")
-            match name:
-                case "weights" | "mixing_weights":
-                    return "decay_regular"
-                case "filter_coeffs":
-                    return "decay_special"
-                case _:
-                    return "ignore"
-
         def build_opt(weight_decay):
             match config["optimizer"]:
                 case "adamw":
@@ -450,10 +438,8 @@ def _train(config: dict, run_notes: str = ""):
                 case _:
                     raise ValueError(f"optimizer {config['optimizer']} not supported")
 
-        label_fn = lambda params: jax.tree_util.tree_map_with_path(get_weight_decay_label, params)
-        param_labels = label_fn(model)
         print("\n---------- Weight Decay ----------")
-        for path, label in jax.tree_util.tree_leaves_with_path(param_labels):
+        for path, label in jax.tree_util.tree_leaves_with_path(get_param_labels(model)):
             if label != "ignore":
                 path_str = "".join(str(p) for p in path)
                 print(f"[{label.upper()}] {path_str}")
@@ -466,13 +452,10 @@ def _train(config: dict, run_notes: str = ""):
                     "decay_special": build_opt(config["weight_decay_cheby"]),
                     "ignore": build_opt(0.0),
                 },
-                param_labels=label_fn,
+                param_labels=get_param_labels,
             ),
         )
         opt_state = optim.init(eqx.filter(model, eqx.is_array))
-        print("\n---------- Optimizer State ----------")
-        eqx.tree_pprint(opt_state)
-        print("-------------------------------------\n")
         model = jax.device_put_replicated(model, list(jax.devices()))
         opt_state = jax.device_put_replicated(opt_state, list(jax.devices()))
         ema_model = jax.tree.map(lambda x: x.copy(), model)  # copy model

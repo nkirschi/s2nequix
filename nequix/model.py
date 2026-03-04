@@ -747,6 +747,30 @@ def node_graph_idx(data: jraph.GraphsTuple) -> jnp.ndarray:
     return node_gr_idx
 
 
+def get_param_labels(model_tree):
+    """Assigns weight decay labels strictly based on parameter paths."""
+
+    def label_fn(path, leaf):
+        # Ignore static metadata and discrete arrays
+        if not eqx.is_inexact_array(leaf):
+            return "ignore"
+
+        path_str = "".join(str(p) for p in path)
+
+        # Blacklist: Explicitly protect biases, layer norms, and isolated atom energies
+        if "bias" in path_str or "layer_norm" in path_str or "atom_energies" in path_str:
+            return "ignore"
+
+        # Special Case: Route Chebyshev/EVD filters
+        if "filter_coeffs" in path_str:
+            return "decay_special"
+
+        # Whitelist: Everything else gets regular decay
+        return "decay_regular"
+
+    return jax.tree_util.tree_map_with_path(label_fn, model_tree)
+
+
 def save_model(path: str, model: eqx.Module, config: dict):
     """Save a model and its config to a file."""
     with open(path, "wb") as f:
