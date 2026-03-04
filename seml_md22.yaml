@@ -1,0 +1,37 @@
+seml:
+  executable: seml_run.py
+  output_dir: ./output_log/slurm/s2nequix
+  project_root_dir: ./
+
+slurm:
+  - experiments_per_job: 1
+    sbatch_options:
+      gres: gpu:1 # num GPUs
+      mem: 16G # memory
+      cpus-per-task: 8 # num cores
+      time: 2-00:00 # max time, D-HH:MM
+      partition: gpu_h100
+      qos: default # default # interactive
+
+fixed:
+  profile_device_memory: false
+  jax_enable_x64: false
+  run_notes: "double walled nanotube test"
+  config_path: "configs/md22.yml"  # path to base config file
+  #config_override:  # override entries from the base config file
+    #model: "nequix"
+
+grid:
+  config_override:
+    seed:
+      type: choice
+      options:
+        - 1
+        #- 2
+        #- 3
+
+    model:
+      type: choice
+      options:
+        - "nequix"
+        - "s2nequix-cheby"

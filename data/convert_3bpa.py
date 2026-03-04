@@ -22,7 +22,7 @@ for split_name in [
             db.write(atoms, data=atoms.info)
     np.savez(
         f"{aselmdb_dir}/metadata.npz",
-        natoms=np.repeat(27, len(atoms_list)),
+        natoms=np.repeat(len(atoms_list[0]), len(atoms_list)),
         data_ids=np.repeat("3bpa", len(atoms_list)),
     )
     os.remove(xyz_file)

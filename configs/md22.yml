@@ -1,0 +1,58 @@
+# closely following https://github.com/teddykoker/nequip-eqx/blob/main/configs/3bpa.yml
+
+checkpoint_dir: "checkpoints/" # for saving/resuming training
+# resume_from: "checkpoints/.../matbench.pkl"
+# finetune_from: "models/.../matbench.nqx"
+
+seed: 0
+
+# dataset specific
+dataset_name: "MD-22"
+train_path: "/ceph/hdd/students/kirsc/data/md22/double-walled_nanotube"
+valid_frac: 0.1
+laplacian_cutoff_interval: [2.0, 10.0]
+num_eigenvectors: 16
+atomic_numbers: [1, 6, 7, 8]  # 3BPA is C_12 ​H_12 ​N_2 ​O
+num_workers: 16
+
+# model specific
+model: "nequix"  # options: "nequix, s2nequix-v1"
+hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"
+lmax: 3
+n_layers: 4  # default nequiX
+spatial_cutoff: 6.0  # default nequiX
+spectral_cutoffs: [12.0]
+radial_basis_size: 8
+radial_mlp_size: 64
+radial_mlp_layers: 2
+radial_polynomial_p: 6.0
+mlp_init_scale: 4.0
+index_weights: false
+layer_norm: true
+kernel: true
+cheby_degree: 5
+pretransform_feats: false 
+
+# training specific
+optimizer: "muon"
+learning_rate: 0.01
+schedule: "plateau"  # options: 'cosine', 'plateau'
+warmup_epochs: 5
+warmup_factor: 0.2
+plateau_patience: 20
+plateau_factor: 0.8
+grad_clip_norm: 100.0
+weight_decay: 1.0e-6
+weight_decay_cheby: 1.0e-2
+batch_size: 1  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
+n_epochs: 1_000_000
+early_stopping_patience: 100
+early_stopping_min_relative_improvement: 1.0e-5
+energy_weight: 1.0
+force_weight: 10.0
+stress_weight: 0.0  # no stress data in 3BPA
+loss_type: "mae"
+log_every: 50  # batches, not epochs
+ema_decay: 0.999
+
+# to hyper-optimise: schedule, base lr, ema_decay, forces-to-energy ratio
