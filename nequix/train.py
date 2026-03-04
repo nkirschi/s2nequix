@@ -169,7 +169,7 @@ def load_training_state(path):
 
 def print_summary(model):
     print("--- Model Structure ---")
-    eqx.tree_pprint(model)
+    eqx.tree_pprint(model, truncate_leaf=lambda x: isinstance(x, tuple))
 
     # Filter for arrays (weights/biases) and ignore static configuration
     params = [x for x in jax.tree_util.tree_leaves(model) if eqx.is_array(x)]
