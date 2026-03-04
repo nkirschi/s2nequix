@@ -470,6 +470,9 @@ def _train(config: dict, run_notes: str = ""):
             ),
         )
         opt_state = optim.init(eqx.filter(model, eqx.is_array))
+        print("\n---------- Optimizer State ----------")
+        eqx.tree_pprint(opt_state)
+        print("-------------------------------------\n")
         model = jax.device_put_replicated(model, list(jax.devices()))
         opt_state = jax.device_put_replicated(opt_state, list(jax.devices()))
         ema_model = jax.tree.map(lambda x: x.copy(), model)  # copy model
