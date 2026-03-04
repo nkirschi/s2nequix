@@ -5,6 +5,7 @@ seml:
 
 slurm:
   - experiments_per_job: 1
+    # max_simultaneous_jobs: 4
     sbatch_options:
       gres: gpu:1 # num GPUs
       mem: 32G # memory
@@ -16,7 +17,7 @@ slurm:
 fixed:
   profile_device_memory: false
   jax_enable_x64: false
-  run_notes: "test cheby layer"
+  run_notes: "verify run 368 can be emulated after the recent changes"
   config_path: "configs/omol25.yml"  # path to base config file
   config_override:  # override entries from the base config file
     subset: "spice"
@@ -38,7 +39,24 @@ grid:  # remember to increase slurm time limit
     cheby_degree:
       type: choice
       options:
-        - 3
+        #- 5
         - 10
-        - 20
-        - 50
+        #- 20
+
+    pretransform_feats:
+      type: choice
+      options:
+        - true
+        #- false
+    
+    weight_decay_cheby:
+      type: choice
+      options:
+        #- 1.0e-2
+        - 1.0e-3
+
+    spectral_cutoffs:
+      type: choice
+      options:
+        #- [6.0, 8.0, 10.0, 12.0]
+        - [6.0]
