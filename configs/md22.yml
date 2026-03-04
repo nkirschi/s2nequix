@@ -44,7 +44,7 @@ plateau_factor: 0.8
 grad_clip_norm: 100.0
 weight_decay: 1.0e-6
 weight_decay_cheby: 1.0e-2
-batch_size: 1  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
+batch_size: 5  # NOTE: per device. buffer size depends on avg_n_nodes and since this is ~4x here compared to nequip-mp-1.yml, we use 1/4 the batch size
 n_epochs: 1_000_000
 early_stopping_patience: 100
 early_stopping_min_relative_improvement: 1.0e-5
