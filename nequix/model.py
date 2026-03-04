@@ -397,50 +397,52 @@ class EquivariantChebyshevLayer(eqx.Module):
         # 1. Strip e3nn abstractions: operate strictly on flat arrays for XLA fusion
         x_raw = node_feats.array
         num_nodes = x_raw.shape[0]
+
+        # Pull static tuple into a local JAX array for advanced indexing
         idx_array = jnp.array(self.expand_indices)
 
-        # 2. Define the logic for a SINGLE cutoff
-        def single_cutoff_chebyshev(norm_weights: jax.Array, coeffs: jax.Array):
-            def l_tilde_op(v_raw: jax.Array) -> jax.Array:
-                messages = v_raw[senders] * norm_weights[:, None]
-                return -jraph.segment_sum(messages, receivers, num_segments=num_nodes)
+        # 2. vmap only the lowest-level mathematical operations
+        @jax.vmap
+        def l_tilde_op(v: jax.Array, norm_weights: jax.Array) -> jax.Array:
+            messages = v[senders] * norm_weights[:, None]
+            return -jraph.segment_sum(messages, receivers, num_segments=num_nodes)
 
-            def apply_filter(v_raw: jax.Array, k_idx: int) -> jax.Array:
-                # Expand (num_channels,) to (total_dim,) dynamically inside the forward pass
-                c_k_expanded = coeffs[k_idx][idx_array]
-                return v_raw * c_k_expanded
+        @jax.vmap
+        def apply_filter(v: jax.Array, coeffs_k: jax.Array) -> jax.Array:
+            # Expand (num_channels,) to (total_dim,) dynamically using indexing
+            c_k_expanded = coeffs_k[idx_array]
+            return v * c_k_expanded
 
-            # Initialization for Chebyshev recurrence
-            t0 = x_raw
-            t1 = l_tilde_op(x_raw)
-            out_acc = apply_filter(t0, 0) + apply_filter(t1, 1)
+        # 3. Expand the raw node features across the M cutoffs manually
+        # Shape: (num_cutoffs, num_nodes, total_dim)
+        t0 = jnp.repeat(x_raw[None, ...], self.num_cutoffs, axis=0)
+        t1 = l_tilde_op(t0, norm_weights_multi)
 
-            def scan_body(carry, k_idx):
-                t_curr, t_prev, out = carry
-                t_next = l_tilde_op(t_curr) * 2.0 - t_prev
-                out_next = out + apply_filter(t_next, k_idx)
-                return (t_next, t_curr, out_next), None
+        # Apply T0 and T1 filters globally
+        c0 = self.filter_coeffs[:, 0, :]
+        c1 = self.filter_coeffs[:, 1, :]
+        out_acc = apply_filter(t0, c0) + apply_filter(t1, c1)
 
-            if self.degree >= 2:
-                scan_indices = jnp.arange(2, self.degree + 1)
-                final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out_acc), scan_indices)
-                _, _, out_acc = final_carry
+        # 4. Global Scan Loop (Runs exactly once, naturally handling all M cutoffs internally)
+        def scan_body(carry, c_k):
+            t_curr, t_prev, out = carry
+            t_next = l_tilde_op(t_curr, norm_weights_multi) * 2.0 - t_prev
+            out_next = out + apply_filter(t_next, c_k)
+            return (t_next, t_curr, out_next), None
 
-            return out_acc
+        if self.degree >= 2:
+            # Swap axes to iterate strictly over the degree dimension
+            # Shape goes from (num_cutoffs, degree + 1, num_channels)
+            # to (degree - 1, num_cutoffs, num_channels)
+            coeffs_scan = jnp.swapaxes(self.filter_coeffs, 0, 1)[2:]
+            final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out_acc), xs=coeffs_scan)
+            _, _, out_acc = final_carry
 
-        # 3. VMAP across the cutoff dimension
-        # Axes: 0 maps over norm_weights_multi (M, E), 0 maps over filter_coeffs (M, K, C)
-        # Output multi_scale_out shape: (num_cutoffs, num_nodes, total_dim)
-        multi_scale_out = jax.vmap(single_cutoff_chebyshev, in_axes=(0, 0))(
-            norm_weights_multi, self.filter_coeffs
-        )
+        multi_scale_out = out_acc
 
-        # 4. Expand mixing weights across the spherical harmonic dimensions
+        # 5. Broadcast mixing weights and sum
         # Shape goes from (num_cutoffs, num_channels) -> (num_cutoffs, total_dim)
         expanded_mixing = self.mixing_weights[:, idx_array]
-
-        # 5. Broadcast, Multiply, and Sum
-        # Broadcast expanded_mixing over the num_nodes dimension and sum over cutoffs
         final_out = jnp.sum(multi_scale_out * expanded_mixing[:, None, :], axis=0)
 
         # 6. Re-wrap into IrrepsArray exactly once
