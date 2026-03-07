@@ -331,11 +331,9 @@ class EquivariantSpectralLayer(eqx.Module):
 class EquivariantChebyshevLayer(eqx.Module):
     irreps: e3nn.Irreps = eqx.field(static=True)
     degree: int = eqx.field(static=True)
-    num_cutoffs: int = eqx.field(static=True)
     expand_indices: tuple[int, ...] = eqx.field(static=True)
 
     filter_coeffs: jax.Array
-    mixing_weights: jax.Array
     pretransform_mlp: Optional[EquivariantMLP]
 
     def __init__(
@@ -343,19 +341,14 @@ class EquivariantChebyshevLayer(eqx.Module):
         key: jax.Array,
         irreps: e3nn.Irreps,
         degree: int,
-        num_cutoffs: int,
         pretransform_feats: bool = False,
         init_to_zero: bool = True,
     ):
         self.irreps = e3nn.Irreps(irreps)
         self.degree = degree
-        self.num_cutoffs = num_cutoffs
 
         repeats = [ir.dim for mul, ir in self.irreps for _ in range(mul)]
-        indices = []
-        for i, r in enumerate(repeats):
-            indices.extend([i] * r)
-        self.expand_indices = tuple(indices)
+        self.expand_indices = tuple(i for i, r in enumerate(repeats) for _ in range(r))
         k1, k2 = jax.random.split(key, 2)
 
         if pretransform_feats:
@@ -370,83 +363,51 @@ class EquivariantChebyshevLayer(eqx.Module):
         num_channels = self.irreps.num_irreps
 
         # Filter coefficients for the Chebyshev polynomials
-        # Shape: (num_cutoffs, degree + 1, num_channels)
-        self.filter_coeffs = jnp.zeros((self.num_cutoffs, degree + 1, num_channels))
+        self.filter_coeffs = jnp.zeros((degree + 1, num_channels))
         if not init_to_zero:
-            # Set T_0 to identity across all parallel filters
-            self.filter_coeffs = self.filter_coeffs.at[:, 0, :].set(1.0)
-            self.filter_coeffs += (
-                jax.random.normal(k2, (self.num_cutoffs, degree + 1, num_channels)) * 0.01
-            )
-
-        # Mixing weights to combine the parallel scale outputs
-        # Shape: (num_cutoffs, num_channels)
-        # Initialized to compute a simple average initially (1 / M)
-        self.mixing_weights = jnp.ones((self.num_cutoffs, num_channels)) / self.num_cutoffs
+            self.filter_coeffs = self.filter_coeffs.at[0, :].set(1.0)
+            self.filter_coeffs += jax.random.normal(k2, (degree + 1, num_channels)) * 0.01
 
     def __call__(
         self,
         node_feats: e3nn.IrrepsArray,
-        norm_weights_multi: jax.Array,  # Shape: (num_cutoffs, num_edges)
+        norm_weights: jax.Array,
         senders: jax.Array,
         receivers: jax.Array,
     ) -> e3nn.IrrepsArray:
         if self.pretransform_mlp is not None:
             node_feats = self.pretransform_mlp(node_feats)
 
-        # 1. Strip e3nn abstractions: operate strictly on flat arrays for XLA fusion
         x_raw = node_feats.array
         num_nodes = x_raw.shape[0]
-
-        # Pull static tuple into a local JAX array for advanced indexing
         idx_array = jnp.array(self.expand_indices)
 
-        # 2. vmap only the lowest-level mathematical operations
-        @jax.vmap
-        def l_tilde_op(v: jax.Array, norm_weights: jax.Array) -> jax.Array:
+        def l_tilde_op(v: jax.Array) -> jax.Array:
             messages = v[senders] * norm_weights[:, None]
             return -jraph.segment_sum(messages, receivers, num_segments=num_nodes)
 
-        @jax.vmap
         def apply_filter(v: jax.Array, coeffs_k: jax.Array) -> jax.Array:
-            # Expand (num_channels,) to (total_dim,) dynamically using indexing
-            c_k_expanded = coeffs_k[idx_array]
-            return v * c_k_expanded
+            return v * coeffs_k[idx_array]
 
-        # 3. Expand the raw node features across the M cutoffs manually
-        # Shape: (num_cutoffs, num_nodes, total_dim)
-        t0 = jnp.repeat(x_raw[None, ...], self.num_cutoffs, axis=0)
-        t1 = l_tilde_op(t0, norm_weights_multi)
+        t0 = x_raw
+        t1 = l_tilde_op(t0)
 
-        # Apply T0 and T1 filters globally
-        c0 = self.filter_coeffs[:, 0, :]
-        c1 = self.filter_coeffs[:, 1, :]
-        out_acc = apply_filter(t0, c0) + apply_filter(t1, c1)
+        c0 = self.filter_coeffs[0, :]
+        c1 = self.filter_coeffs[1, :]
+        out = apply_filter(t0, c0) + apply_filter(t1, c1)
 
-        # 4. Global Scan Loop (Runs exactly once, naturally handling all M cutoffs internally)
         def scan_body(carry, c_k):
-            t_curr, t_prev, out = carry
-            t_next = l_tilde_op(t_curr, norm_weights_multi) * 2.0 - t_prev
-            out_next = out + apply_filter(t_next, c_k)
+            t_curr, t_prev, out_curr = carry
+            t_next = l_tilde_op(t_curr) * 2.0 - t_prev
+            out_next = out_curr + apply_filter(t_next, c_k)
             return (t_next, t_curr, out_next), None
 
         if self.degree >= 2:
-            # Swap axes to iterate strictly over the degree dimension
-            # Shape goes from (num_cutoffs, degree + 1, num_channels)
-            # to (degree - 1, num_cutoffs, num_channels)
-            coeffs_scan = jnp.swapaxes(self.filter_coeffs, 0, 1)[2:]
-            final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out_acc), xs=coeffs_scan)
-            _, _, out_acc = final_carry
+            coeffs_scan = self.filter_coeffs[2:]
+            final_carry, _ = jax.lax.scan(scan_body, (t1, t0, out), xs=coeffs_scan)
+            _, _, out = final_carry
 
-        multi_scale_out = out_acc
-
-        # 5. Broadcast mixing weights and sum
-        # Shape goes from (num_cutoffs, num_channels) -> (num_cutoffs, total_dim)
-        expanded_mixing = self.mixing_weights[:, idx_array]
-        final_out = jnp.sum(multi_scale_out * expanded_mixing[:, None, :], axis=0)
-
-        # 6. Re-wrap into IrrepsArray exactly once
-        return e3nn.IrrepsArray(self.irreps, final_out)
+        return e3nn.IrrepsArray(self.irreps, out)
 
 
 class Nequix(eqx.Module):
@@ -455,7 +416,7 @@ class Nequix(eqx.Module):
     radial_basis_size: int = eqx.field(static=True)
     radial_polynomial_p: float = eqx.field(static=True)
     spatial_cutoff: float = eqx.field(static=True)
-    spectral_cutoffs: tuple[float, ...] = eqx.field(static=True)
+    spectral_cutoff: float = eqx.field(static=True)
     shift: float = eqx.field(static=True)
     scale: float = eqx.field(static=True)
     model_type: str = eqx.field(static=True)
@@ -471,7 +432,7 @@ class Nequix(eqx.Module):
         n_species,
         lmax: int = 3,
         spatial_cutoff: float = 5.0,
-        spectral_cutoffs: tuple[float, ...] = (10.0,),
+        spectral_cutoff: float = 10.0,
         hidden_irreps: str = "128x0e + 128x1o + 128x2e + 128x3o",
         n_layers: int = 5,
         radial_basis_size: int = 8,
@@ -491,7 +452,7 @@ class Nequix(eqx.Module):
     ):
         self.lmax = lmax
         self.spatial_cutoff = spatial_cutoff
-        self.spectral_cutoffs = tuple(spectral_cutoffs)
+        self.spectral_cutoff = spectral_cutoff
         self.n_species = n_species
         self.radial_basis_size = radial_basis_size
         self.radial_polynomial_p = radial_polynomial_p
@@ -534,7 +495,6 @@ class Nequix(eqx.Module):
                         EquivariantChebyshevLayer(
                             irreps=hidden_irreps if i < n_layers - 1 else output_irreps,
                             degree=cheby_degree,
-                            num_cutoffs=len(self.spectral_cutoffs),
                             key=s2subkey,
                             pretransform_feats=pretransform_feats,
                         )
@@ -600,16 +560,15 @@ class Nequix(eqx.Module):
 
         # compute symmetrically normalized weights for spectral layers: D^(-1/2) W D^(-1/2)
         num_nodes = species.shape[0]
-
-        def compute_single_norm_weights(c):
-            poly_cutoff_spectral = polynomial_cutoff(r_norm, c, self.radial_polynomial_p)
-            degrees = jraph.segment_sum(poly_cutoff_spectral, receivers, num_segments=num_nodes)
-            degrees = jnp.where(degrees < 1e-4, 1.0, degrees)  # prevent div by 0 for isolated nodes
-            inv_sqrt_degrees = jax.lax.rsqrt(degrees)
-            return poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
-
-        # vmap over the static tuple of cutoffs
-        norm_weights = jax.vmap(compute_single_norm_weights)(jnp.array(self.spectral_cutoffs))
+        poly_cutoff_spectral = polynomial_cutoff(
+            r_norm, self.spectral_cutoff, self.radial_polynomial_p
+        )
+        degrees = jraph.segment_sum(poly_cutoff_spectral, receivers, num_segments=num_nodes)
+        degrees = jnp.where(degrees < 1e-4, 1.0, degrees)  # prevent div by 0 for isolated nodes
+        inv_sqrt_degrees = jax.lax.rsqrt(degrees)
+        norm_weights = (
+            poly_cutoff_spectral * inv_sqrt_degrees[senders] * inv_sqrt_degrees[receivers]
+        )
 
         for i in range(len(self.spatial_layers)):
             features = self.spatial_layers[i](
@@ -789,7 +748,7 @@ def load_model(path: str) -> tuple[Nequix, dict]:
             hidden_irreps=config["hidden_irreps"],
             lmax=config["lmax"],
             spatial_cutoff=config.get("spatial_cutoff", config["cutoff"]),
-            spectral_cutoffs=config.get("spectral_cutoffs", (config["cutoff"],)),
+            spectral_cutoff=config.get("spectral_cutoff", config["cutoff"]),
             n_layers=config["n_layers"],
             radial_basis_size=config["radial_basis_size"],
             radial_mlp_size=config["radial_mlp_size"],

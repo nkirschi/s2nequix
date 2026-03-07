@@ -210,8 +210,8 @@ def _train(config: dict, run_notes: str = ""):
         config["valid_path"] = None
     if "spatial_cutoff" not in config:
         config["spatial_cutoff"] = config["cutoff"]
-    if "spectral_cutoffs" not in config:
-        config["spectral_cutoffs"] = (config["spatial_cutoff"],)
+    if "spectral_cutoff" not in config:
+        config["spectral_cutoff"] = config["spatial_cutoff"]
     if "weight_decay_cheby" not in config:
         config["weight_decay_cheby"] = config["weight_decay"]
     if "model" not in config:
@@ -262,15 +262,15 @@ def _train(config: dict, run_notes: str = ""):
     os.makedirs(checkpoint_path, exist_ok=True)
 
     print(f"loading training dataset from {config['train_path']}...")
-    super_cutoff = max(config["spatial_cutoff"], max(config["spectral_cutoffs"]))
+    super_cutoff = max(config["spatial_cutoff"], config["spectral_cutoff"])
     print(
-        f"super_cutoff = {super_cutoff} = max({config['spatial_cutoff']}, {max(config['spectral_cutoffs'])})"
+        f"super_cutoff = {super_cutoff} = max({config['spatial_cutoff']}, {config['spectral_cutoff']})"
     )
     train_dataset = AseDBDataset(
         file_path=config["train_path"],
         atomic_numbers=config["atomic_numbers"],
         cutoff=super_cutoff,
-        spectral_cutoff=config["spectral_cutoffs"][0],
+        spectral_cutoff=config["spectral_cutoff"],
         backend="jax",
         num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
     )
@@ -281,7 +281,7 @@ def _train(config: dict, run_notes: str = ""):
             file_path=config["valid_path"],
             atomic_numbers=config["atomic_numbers"],
             cutoff=super_cutoff,
-            spectral_cutoff=config["spectral_cutoffs"][0],
+            spectral_cutoff=config["spectral_cutoff"],
             backend="jax",
             num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
         )
@@ -378,7 +378,7 @@ def _train(config: dict, run_notes: str = ""):
             hidden_irreps=config["hidden_irreps"],
             lmax=config["lmax"],
             spatial_cutoff=config["spatial_cutoff"],
-            spectral_cutoffs=config["spectral_cutoffs"],
+            spectral_cutoff=config["spectral_cutoff"],
             n_layers=config["n_layers"],
             radial_basis_size=config["radial_basis_size"],
             radial_mlp_size=config["radial_mlp_size"],

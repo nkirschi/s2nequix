@@ -13,14 +13,14 @@ config.update("jax_default_matmul_precision", "float32")
 config.update("jax_platform_name", "cpu")
 
 
-def make_random_graph(key, num_nodes, num_edges, num_cutoffs=1, node_offset=0):
+def make_random_graph(key, num_nodes, num_edges, node_offset=0):
     """Helper to generate random sparse graph edges and weights."""
     k1, k2, k3 = jax.random.split(key, 3)
     # Generate random edges within the node range, shifted by the batch offset
     senders = jax.random.randint(k1, (num_edges,), 0, num_nodes) + node_offset
     receivers = jax.random.randint(k2, (num_edges,), 0, num_nodes) + node_offset
-    # Random normalized weights in [0, 1] mapped across M cutoffs
-    norm_weights = jax.random.uniform(k3, (num_cutoffs, num_edges))
+    # Random normalized weights in [0, 1]
+    norm_weights = jax.random.uniform(k3, (num_edges,))
     return senders, receivers, norm_weights
 
 
@@ -28,18 +28,16 @@ def make_random_graph(key, num_nodes, num_edges, num_cutoffs=1, node_offset=0):
 def test_chebyshev_layer_initially_outputs_zero():
     n, e = 10, 20
     degree = 6
-    num_cutoffs = 3
     irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
     x = e3nn.IrrepsArray(irreps, jax.random.normal(key, (n, irreps.dim)))
-    senders, receivers, norm_weights = make_random_graph(key, n, e, num_cutoffs)
+    senders, receivers, norm_weights = make_random_graph(key, n, e)
 
     # init_to_zero is True by default
     layer = EquivariantChebyshevLayer(
         irreps=irreps,
         degree=degree,
-        num_cutoffs=num_cutoffs,
         key=key,
         pretransform_feats=False,
         init_to_zero=True,
@@ -55,19 +53,17 @@ def test_chebyshev_layer_initially_outputs_zero():
 def test_chebyshev_layer_is_equivariant():
     n, e = 10, 20
     degree = 6
-    num_cutoffs = 2
     irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
     k_x, k_g = jax.random.split(key)
 
     x = e3nn.IrrepsArray(irreps, jax.random.normal(k_x, (n, irreps.dim)))
-    senders, receivers, norm_weights = make_random_graph(k_g, n, e, num_cutoffs)
+    senders, receivers, norm_weights = make_random_graph(k_g, n, e)
 
     layer = EquivariantChebyshevLayer(
         irreps=irreps,
         degree=degree,
-        num_cutoffs=num_cutoffs,
         key=key,
         pretransform_feats=True,
         init_to_zero=False,  # note: zero initialisation would make the test trivial
@@ -84,7 +80,6 @@ def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
     ns = [10, 6, 8]  # number of nodes in each graph
     es = [24, 12, 18]  # number of edges in each graph
     degree = 6
-    num_cutoffs = 2
     irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
@@ -100,7 +95,7 @@ def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
     node_offset = 0
     for n, e in zip(ns, es):
         k_g, k_graph = jax.random.split(k_g)
-        s, r, w = make_random_graph(k_graph, n, e, num_cutoffs, node_offset=node_offset)
+        s, r, w = make_random_graph(k_graph, n, e, node_offset=node_offset)
         senders_list.append(s)
         receivers_list.append(r)
         weights_list.append(w)
@@ -108,17 +103,15 @@ def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
 
     senders = jnp.concatenate(senders_list, axis=0)
     receivers = jnp.concatenate(receivers_list, axis=0)
-    norm_weights = jnp.concatenate(weights_list, axis=1)
+    norm_weights = jnp.concatenate(weights_list, axis=0)
 
     layer = EquivariantChebyshevLayer(
         irreps=irreps,
         degree=degree,
-        num_cutoffs=num_cutoffs,
         key=key,
         pretransform_feats=True,
         init_to_zero=False,  # note: zero initialisation would make the test trivial
     )
-    
     function_to_test = lambda x: layer(x, norm_weights, senders, receivers)
     assert_equivariant(function_to_test, key, x)  # type: ignore
 
@@ -127,7 +120,6 @@ def test_chebyshev_layer_is_equivariant_with_dynamic_batching():
 def test_chebyshev_layer_exact_message_passing():
     n = 2
     degree = 2
-    num_cutoffs = 1
     irreps = 11 * e3nn.Irreps("4x0e + 2x1o + 1x2e")
 
     key = jax.random.key(42)
@@ -136,12 +128,11 @@ def test_chebyshev_layer_exact_message_passing():
     # 2-node bidirectional graph with weight 1.0
     senders = jnp.array([0, 1])
     receivers = jnp.array([1, 0])
-    norm_weights = jnp.array([[1.0, 1.0]])
+    norm_weights = jnp.array([1.0, 1.0])
 
     layer = EquivariantChebyshevLayer(
         irreps=irreps,
         degree=degree,
-        num_cutoffs=num_cutoffs,
         key=key,
         pretransform_feats=False,
         init_to_zero=False,  # note: zero initialisation would make the test trivial
@@ -150,8 +141,7 @@ def test_chebyshev_layer_exact_message_passing():
 
     # Helper to hot-swap coefficients and run the layer
     def run_with_coeffs(c0, c1, c2):
-        # Shape must match self.filter_coeffs: (num_cutoffs, degree + 1, num_channels)
-        c = jnp.array([[[c0] * num_channels, [c1] * num_channels, [c2] * num_channels]])
+        c = jnp.array([[c0] * num_channels, [c1] * num_channels, [c2] * num_channels])
         temp_layer = eqx.tree_at(lambda m: m.filter_coeffs, layer, c)
         return temp_layer(x, norm_weights, senders, receivers)
 
