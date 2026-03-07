@@ -127,17 +127,22 @@ def atomic_numbers_to_indices(atomic_numbers: list[int]) -> dict[int, int]:
     return {n: i for i, n in enumerate(sorted(atomic_numbers))}
 
 
-def cosine_cutoff(x, decay_start, cutoff):
-    cos = 0.5 * (1 + np.cos(np.pi * (x - decay_start) / (cutoff - decay_start)))
-    out = np.where(x >= cutoff, 0, cos)
-    out = np.where(x <= decay_start, 1, out)
-    return out
+def polynomial_cutoff(x: np.ndarray, r_max: float, p: float) -> np.ndarray:
+    factor = 1.0 / r_max
+    x = x * factor
+    out = 1.0
+    out = out - (((p + 1.0) * (p + 2.0) / 2.0) * np.power(x, p))
+    out = out + (p * (p + 2.0) * np.power(x, p + 1.0))
+    out = out - ((p * (p + 1.0) / 2) * np.power(x, p + 2.0))
+    return out * np.where(x < 1.0, 1.0, 0.0)
 
 
-def compute_laplacian_eigdecomp(positions, inner_cutoff, outer_cutoff):
+def compute_laplacian_eigdecomp(
+    positions: np.ndarray, cutoff: float
+) -> tuple[np.ndarray, np.ndarray]:
     positions = positions.astype(np.float64)
     dist_matrix = np.linalg.norm(positions[:, None] - positions[None, :], axis=-1)
-    adj_matrix = cosine_cutoff(dist_matrix, inner_cutoff, outer_cutoff)
+    adj_matrix = polynomial_cutoff(dist_matrix, cutoff, p=6)
     inv_deg_matrix = np.diag(1 / np.sqrt(adj_matrix.sum(axis=0)))
     laplacian = np.eye(len(positions)) - inv_deg_matrix @ adj_matrix @ inv_deg_matrix
     sym_laplacian = (laplacian + laplacian.T.conj()) / 2
@@ -208,18 +213,19 @@ class AseDBDataset(Dataset):
         file_path: str,
         atomic_numbers: list[int],
         cutoff: float = 5.0,
+        spectral_cutoff: float = 5.0,
         backend: str = "jax",
-        load_spectral: bool = False,
-        laplacian_cutoff_interval: tuple[float] = (2.0, 10.0),  # unit: Ångström
-        num_eigenvectors: int = 16,  # size of partial EVD
+        num_eigenvectors: int | None = None,  # size of partial EVD
     ):
-        if backend == "torch" and load_spectral:
+        self.load_spectral = num_eigenvectors is not None
+        if backend == "torch" and self.load_spectral:
             raise NotImplementedError("spectral batching is not supported for torch backend")
 
         super().__init__(backend=backend)
         self.atomic_indices = atomic_numbers_to_indices(atomic_numbers)
         self.file_path = Path(file_path)
         self.cutoff = cutoff
+        self.spectral_cutoff = spectral_cutoff
         if self.file_path.is_dir():
             files = sorted(self.file_path.rglob("*.aselmdb"))
             self.dbs = [ase.db.connect(fp, readonly=True, use_lock_file=False) for fp in files]
@@ -227,8 +233,6 @@ class AseDBDataset(Dataset):
             self.dbs = [ase.db.connect(file_path, readonly=True, use_lock_file=False)]
         self.db_ids = [db.ids for db in self.dbs]
         self.id_cumulative = np.cumsum([len(ids) for ids in self.db_ids])
-        self.load_spectral = load_spectral
-        self.laplacian_cutoff_interval = laplacian_cutoff_interval
         self.num_eigenvectors = num_eigenvectors
 
     def __len__(self):
@@ -242,9 +246,11 @@ class AseDBDataset(Dataset):
         graph = preprocess_graph(atoms, self.atomic_indices, self.cutoff, True)
 
         if self.load_spectral:
-            a, b = self.laplacian_cutoff_interval
             spectral_path = (
-                self.file_path / "spectral" / f"cutoff_{a:.1f}-{b:.1f}" / f"{db_idx}_{idx}.npz"
+                self.file_path
+                / "spectral"
+                / f"cutoff_{self.spectral_cutoff:.1f}"
+                / f"{db_idx}_{idx}.npz"
             )
             try:
                 data = dict(np.load(spectral_path))
@@ -253,7 +259,7 @@ class AseDBDataset(Dataset):
                     spectral_path.unlink()
                 spectral_path.parent.mkdir(parents=True, exist_ok=True)
                 positions = graph["positions"]
-                eigvals, eigvecs = compute_laplacian_eigdecomp(positions, a, b)
+                eigvals, eigvecs = compute_laplacian_eigdecomp(positions, self.spectral_cutoff)
                 data = {"eigvals": eigvals, "eigvecs": eigvecs}
                 np.savez_compressed(spectral_path, **data)
 
@@ -496,7 +502,9 @@ def average_atom_energies(dataset: Dataset) -> list[float]:
     return E0s
 
 
-def dataset_stats(dataset: Dataset, atom_energies: list[float], spatial_cutoff: float, num_workers: int = 16) -> dict:
+def dataset_stats(
+    dataset: Dataset, atom_energies: list[float], spatial_cutoff: float, num_workers: int = 16
+) -> dict:
     """Compute the statistics of the dataset."""
     atom_energies = np.array(atom_energies)
     num_graphs = len(dataset)

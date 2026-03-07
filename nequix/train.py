@@ -261,11 +261,8 @@ def _train(config: dict, run_notes: str = ""):
         file_path=config["train_path"],
         atomic_numbers=config["atomic_numbers"],
         cutoff=super_cutoff,
+        spectral_cutoff=config["spectral_cutoffs"][0],
         backend="jax",
-        load_spectral=(config["model"] == "s2nequix-evd"),
-        laplacian_cutoff_interval=tuple(config["laplacian_cutoff_interval"])
-        if "laplacian_cutoff_interval" in config
-        else None,
         num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
     )
 
@@ -275,7 +272,9 @@ def _train(config: dict, run_notes: str = ""):
             file_path=config["valid_path"],
             atomic_numbers=config["atomic_numbers"],
             cutoff=super_cutoff,
+            spectral_cutoff=config["spectral_cutoffs"][0],
             backend="jax",
+            num_eigenvectors=config["num_eigenvectors"] if "num_eigenvectors" in config else None,
         )
     else:
         assert "valid_frac" in config, "valid_frac must be specified if valid_path is not provided"
@@ -505,31 +504,29 @@ def _train(config: dict, run_notes: str = ""):
         )
 
     for epoch in range(start_epoch, config["n_epochs"]):
-        start_time = time.time()
+        epoch_start_time = time.time()
+        window_start_time = time.time()
         train_loader.loader.set_epoch(epoch)
         for batch in prefetch(train_loader):
-            batch_time = time.time() - start_time
-            start_time = time.time()
             (model, ema_model, opt_state, total_loss, metrics) = train_step(
                 model, ema_model, step, opt_state, batch, plateau_state.scale
             )
-            train_time = time.time() - start_time
             step = step + 1
             if step % config["log_every"] == 0:
                 logs = {}
                 logs["train/loss"] = total_loss.mean().item()
                 logs["learning_rate"] = schedule(step).item() * plateau_state.scale
-                logs["train/batch_time"] = batch_time
-                logs["train/train_time"] = train_time
+                logs["train/step_time"] = (time.time() - window_start_time) / config["log_every"]
                 for key, value in metrics.items():
                     logs[f"train/{key}"] = value.mean().item()
                 logs["train/batch_size"] = (
                     jax.vmap(jraph.get_graph_padding_mask)(batch).sum().item()
                 )
                 wandb.log(logs, step=step)
-                print(f"step: {step}, logs: {logs}")
+                if epoch == 0:
+                    print(f"step: {step}, logs: {logs}")
                 wandb_sync()
-            start_time = time.time()
+                window_start_time = time.time()
 
         ema_model_single = jax.tree.map(lambda x: x[0], ema_model)
         val_metrics = evaluate(
@@ -557,19 +554,22 @@ def _train(config: dict, run_notes: str = ""):
                     wandb_run_id=wandb_run_id,
                 )
 
-        logs = {}
-        for key, value in val_metrics.items():
-            logs[f"val/{key}"] = value
-        logs["epoch"] = epoch
-        wandb.log(logs, step=step)
-        print(f"epoch: {epoch}, logs: {logs}")
-        wandb_sync()
-
         _, plateau_state = plateau_reducer.update(
             updates=None,
             state=plateau_state,
             value=val_metrics["loss"],
         )
+
+        jax.block_until_ready((model, ema_model, opt_state))
+
+        logs = {}
+        for key, value in val_metrics.items():
+            logs[f"val/{key}"] = value
+        logs["epoch"] = epoch
+        logs["epoch_time"] = time.time() - epoch_start_time
+        wandb.log(logs, step=step)
+        print(f"epoch: {epoch}, logs: {logs}")
+        wandb_sync()
 
         if early_stopping.stop(val_metrics["loss"]):
             print(f">>> EARLY STOPPING at epoch {epoch} <<<")
