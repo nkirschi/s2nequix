@@ -12,13 +12,12 @@ seed: 0
 dataset_name: "MD-22"
 train_path: "/ceph/hdd/students/kirsc/data/md22/double-walled_nanotube"
 valid_frac: 0.1
-laplacian_cutoff_interval: [2.0, 10.0]
-num_eigenvectors: 16
+num_eigenvectors: null
 atomic_numbers: [1, 6, 7, 8]  # 3BPA is C_12 ​H_12 ​N_2 ​O
 num_workers: 16
 
 # model specific
-model: "nequix"  # options: "nequix, s2nequix-v1"
+model: "nequix"  # options: "nequix, s2nequix-evd, s2nequix-cheby"
 hidden_irreps: "128x0e + 64x1o + 32x2e + 32x3o"
 lmax: 3
 n_layers: 4  # default nequiX
