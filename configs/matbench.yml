@@ -1,3 +1,5 @@
+entity: "eikenik"
+project: "s2nequix"
 checkpoint_dir: "checkpoints/" # for saving/resuming training
 # resume_from: "checkpoints/matbench.pkl"
 # finetune_from: "models/matbench.nqx"

@@ -220,8 +220,17 @@ def _train(config: dict, run_notes: str = ""):
         config["cheby_degree"] = None
     if "pretransform_feats" not in config:
         config["pretransform_feats"] = None
+    if "entity" not in config:
+        config["entity"] = None
+    if "project" not in config:
+        config["project"] = "nequix"
 
-    wandb_init_kwargs = {"project": "nequix", "config": config, "notes": run_notes}
+    wandb_init_kwargs = {
+        "entity": config["entity"],
+        "project": config["project"],
+        "config": config,
+        "notes": run_notes,
+    }
     using_checkpoint = "resume_from" in config and Path(config["resume_from"]).exists()
     if using_checkpoint:
         (
