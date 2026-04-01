@@ -8,8 +8,8 @@ slurm:
     # max_simultaneous_jobs: 4
     sbatch_options:
       gres: gpu:1 # num GPUs
-      mem: 32G # memory
-      cpus-per-task: 8 # num cores
+      mem: 128G # memory
+      cpus-per-task: 16 # num cores
       time: 30-00:00 # max time, D-HH:MM
       partition: gpu_h200
       qos: default # default # interactive
@@ -35,3 +35,9 @@ grid:
       options:
         - "nequix"
         - "s2nequix-cheby"
+
+    spectral_cutoff:
+      type: choice
+      options:
+        - 6.0
+        - 12.0
