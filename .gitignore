@@ -1,5 +1,6 @@
 # checkpoints
 *.pkl
+context/*
 
 md.traj
 logs/
