@@ -6,12 +6,12 @@ readme = "README.md"
 authors = [
     { name = "Teddy Koker", email = "teddy.koker@gmail.com" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 
 dependencies = [
-    "jax[cuda12]>=0.4.34; sys_platform == 'linux'",
-    "jax>=0.4.34; sys_platform == 'darwin'",
+    "jax[cuda12]; sys_platform == 'linux'",
+    "jax; sys_platform == 'darwin'",
     "e3nn-jax>=0.20.8",
     "jraph>=0.0.6.dev0",
     "equinox>=0.11.11",
@@ -30,6 +30,9 @@ dependencies = [
     "pre-commit>=4.3.0",
     "ruff>=0.14.11",
     "ipykernel>=7.1.0",
+    "cuequivariance>=0.9.1",
+    "cuequivariance-jax>=0.8.1",
+    "cuequivariance-ops-jax-cu12>=0.9.1",
 ]
 
 [project.urls]
@@ -64,13 +67,6 @@ line-length = 100
 ase-db-backends = { git = "https://gitlab.com/ase/ase-db-backends.git" }
 
 [project.optional-dependencies]
-torch = [
-  "e3nn>=0.5.8",
-  "openequivariance==0.4.1",
-  "torch==2.7.0",
-  "torch-geometric>=2.6.1",
-  "setuptools",
-]
 pft = [
     "phonopy>=2.43.1",
 ]
